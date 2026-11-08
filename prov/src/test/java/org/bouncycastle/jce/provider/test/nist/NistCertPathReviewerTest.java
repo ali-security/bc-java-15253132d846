@@ -558,6 +558,86 @@ public class NistCertPathReviewerTest
                 "Path processing failed on policy.");
     }
     
+    //
+    // 4.13 Name Constraints - the constraints imposed by the CA must also be applied to the
+    // end-entity (target) certificate, RFC 5280 sec. 6.1.3 (b) and (c) (CVE-2026-71889).
+    //
+    public void testValidDNnameConstraintsTest1()
+        throws Exception
+    {
+        doAcceptingTest(TRUST_ANCHOR_ROOT_CERTIFICATE,
+                new String[] { "nameConstraintsDN1CACert", "ValidDNnameConstraintsTest1EE" },
+                new String[] { TRUST_ANCHOR_ROOT_CRL, "nameConstraintsDN1CACRL" });
+    }
+
+    public void testInvalidDNnameConstraintsTest2()
+        throws Exception
+    {
+        doErrorIdTest(TRUST_ANCHOR_ROOT_CERTIFICATE,
+                new String[] { "nameConstraintsDN1CACert", "InvalidDNnameConstraintsTest2EE" },
+                new String[] { TRUST_ANCHOR_ROOT_CRL, "nameConstraintsDN1CACRL" },
+                0,
+                "CertPathReviewer.notPermittedDN");
+    }
+
+    public void testValidRFC822nameConstraintsTest21()
+        throws Exception
+    {
+        doAcceptingTest(TRUST_ANCHOR_ROOT_CERTIFICATE,
+                new String[] { "nameConstraintsRFC822CA1Cert", "ValidRFC822nameConstraintsTest21EE" },
+                new String[] { TRUST_ANCHOR_ROOT_CRL, "nameConstraintsRFC822CA1CRL" });
+    }
+
+    public void testInvalidRFC822nameConstraintsTest22()
+        throws Exception
+    {
+        doErrorIdTest(TRUST_ANCHOR_ROOT_CERTIFICATE,
+                new String[] { "nameConstraintsRFC822CA1Cert", "InvalidRFC822nameConstraintsTest22EE" },
+                new String[] { TRUST_ANCHOR_ROOT_CRL, "nameConstraintsRFC822CA1CRL" },
+                0,
+                "CertPathReviewer.notPermittedEmail");
+    }
+
+    public void testValidDNSnameConstraintsTest30()
+        throws Exception
+    {
+        doAcceptingTest(TRUST_ANCHOR_ROOT_CERTIFICATE,
+                new String[] { "nameConstraintsDNS1CACert", "ValidDNSnameConstraintsTest30EE" },
+                new String[] { TRUST_ANCHOR_ROOT_CRL, "nameConstraintsDNS1CACRL" });
+    }
+
+    public void testInvalidDNSnameConstraintsTest31()
+        throws Exception
+    {
+        doErrorIdTest(TRUST_ANCHOR_ROOT_CERTIFICATE,
+                new String[] { "nameConstraintsDNS1CACert", "InvalidDNSnameConstraintsTest31EE" },
+                new String[] { TRUST_ANCHOR_ROOT_CRL, "nameConstraintsDNS1CACRL" },
+                0,
+                "CertPathReviewer.notPermittedEmail");
+    }
+
+    private void doErrorIdTest(
+        String      trustAnchor,
+        String[]    certs,
+        String[]    crls,
+        int         index,
+        String      messageId)
+        throws Exception
+    {
+        PKIXCertPathReviewer result = doTest(trustAnchor, certs, crls);
+        if (result.isValidCertPath())
+        {
+            fail("path accepted when should be rejected");
+        }
+        else
+        {
+            List errors = result.getErrors(index);
+            assertFalse("no error reported for certificate " + index, errors.isEmpty());
+            ErrorBundle msg = (ErrorBundle) errors.iterator().next();
+            assertEquals(messageId,msg.getId());
+        }
+    }
+
     private void doAcceptingTest(
         String      trustAnchor,
         String[]    certs,
