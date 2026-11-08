@@ -6,6 +6,7 @@ import java.security.SecureRandom;
 import org.bouncycastle.crypto.AsymmetricCipherKeyPair;
 import org.bouncycastle.crypto.agreement.DHAgreement;
 import org.bouncycastle.crypto.agreement.DHBasicAgreement;
+import org.bouncycastle.crypto.agreement.DHStandardGroups;
 import org.bouncycastle.crypto.generators.DHBasicKeyPairGenerator;
 import org.bouncycastle.crypto.generators.DHKeyPairGenerator;
 import org.bouncycastle.crypto.generators.DHParametersGenerator;
@@ -314,6 +315,98 @@ public class DHTest
         kpGen.init(params2);
     }
 
+    private void testMaliciousMessage()
+    {
+        // Both peer-supplied values to calculateAgreement are raised to our (potentially static)
+        // private key, so a peer sending a small-order or out-of-range element could mount a
+        // small-subgroup confinement attack and recover our private key. Both must be validated as
+        // DH public values, even when the other value is well-formed and uses our own parameters.
+        DHKeyPairGenerator kpGen = getDHKeyPairGenerator(g512, p512);
+        DHParameters dhParams = ((DHPublicKeyParameters)kpGen.generateKeyPair().getPublic()).getParameters();
+
+        DHAgreement dh = new DHAgreement();
+        dh.init(kpGen.generateKeyPair().getPrivate());
+        dh.calculateMessage();
+
+        DHPublicKeyParameters goodPub = (DHPublicKeyParameters)kpGen.generateKeyPair().getPublic();
+        BigInteger goodMessage = ((DHPublicKeyParameters)kpGen.generateKeyPair().getPublic()).getY();
+
+        BigInteger one = BigInteger.valueOf(1);
+        BigInteger two = BigInteger.valueOf(2);
+
+        // p-1 has order 2; it is also out of the accepted [2, p-2] range.
+        BigInteger orderTwo = dhParams.getP().subtract(one);
+
+        // A malicious 'message' must be rejected even when 'pub' is well-formed.
+        BigInteger[] badValues = new BigInteger[]{ one, orderTwo, dhParams.getP() };
+        for (int i = 0; i < badValues.length; ++i)
+        {
+            try
+            {
+                dh.calculateAgreement(goodPub, badValues[i]);
+                fail("DHAgreement accepted malicious message " + badValues[i]);
+            }
+            catch (IllegalArgumentException e)
+            {
+                // expected
+            }
+        }
+
+        // A malicious 'pub' must be rejected even when 'message' is well-formed. DHWeakPubKey passes
+        // construction-time validation with a dummy Y, then returns a weak value from the overridden
+        // getY() - so calculateAgreement must re-validate rather than trust the type.
+        for (int i = 0; i < badValues.length; ++i)
+        {
+            try
+            {
+                dh.calculateAgreement(new DHWeakPubKey(badValues[i], dhParams), goodMessage);
+                fail("DHAgreement accepted malicious public key " + badValues[i]);
+            }
+            catch (IllegalArgumentException e)
+            {
+                // expected
+            }
+        }
+
+        // With a known subgroup order q, an in-range element outside the order-q subgroup must also
+        // be rejected. For the safe prime of RFC 3526 group 14 (p = 7 mod 8), p-2 is a quadratic
+        // non-residue, so it lies outside the order-q subgroup, q = (p-1)/2.
+        DHParameters group14 = DHStandardGroups.rfc3526_2048;
+        BigInteger q = group14.getP().subtract(one).shiftRight(1);
+        DHParameters groupParams = new DHParameters(group14.getP(), group14.getG(), q);
+        DHKeyPairGenerator groupKpGen = new DHKeyPairGenerator();
+        groupKpGen.init(new DHKeyGenerationParameters(new SecureRandom(), groupParams));
+
+        DHAgreement groupDh = new DHAgreement();
+        groupDh.init(groupKpGen.generateKeyPair().getPrivate());
+        groupDh.calculateMessage();
+
+        DHPublicKeyParameters groupGoodPub = (DHPublicKeyParameters)groupKpGen.generateKeyPair().getPublic();
+        BigInteger groupGoodMessage = ((DHPublicKeyParameters)groupKpGen.generateKeyPair().getPublic()).getY();
+
+        BigInteger nonSubgroup = groupParams.getP().subtract(two);
+
+        try
+        {
+            groupDh.calculateAgreement(groupGoodPub, nonSubgroup);
+            fail("DHAgreement accepted out-of-subgroup message");
+        }
+        catch (IllegalArgumentException e)
+        {
+            // expected
+        }
+
+        try
+        {
+            groupDh.calculateAgreement(new DHWeakPubKey(nonSubgroup, groupParams), groupGoodMessage);
+            fail("DHAgreement accepted out-of-subgroup public key");
+        }
+        catch (IllegalArgumentException e)
+        {
+            // expected
+        }
+    }
+
     public void performTest()
     {
         testDHBasic(512, 0, g512, p512);
@@ -329,6 +422,8 @@ public class DHTest
         testDH(1024, g1024, p1024);
 
         testBounds();
+
+        testMaliciousMessage();
 
         //
         // generation test.
@@ -410,5 +505,23 @@ public class DHTest
         String[]    args)
     {
         runTest(new DHTest());
+    }
+
+    private static class DHWeakPubKey
+        extends DHPublicKeyParameters
+    {
+        private final BigInteger weakY;
+
+        DHWeakPubKey(BigInteger weakY, DHParameters parameters)
+        {
+            super(BigInteger.valueOf(2), parameters);
+
+            this.weakY = weakY;
+        }
+
+        public BigInteger getY()
+        {
+            return weakY;
+        }
     }
 }
