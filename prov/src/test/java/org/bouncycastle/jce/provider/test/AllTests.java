@@ -59,6 +59,9 @@ public class AllTests
 
         protected void setUp()
         {
+            // KeyStoreTest also covers the legacy BKS-V1 type, which is only registered (and only
+            // loads version 0/1 stores) when this property is set.
+            System.setProperty("org.bouncycastle.bks.enable_v1", "true");
             Security.addProvider(new BouncyCastleProvider());
         }
 

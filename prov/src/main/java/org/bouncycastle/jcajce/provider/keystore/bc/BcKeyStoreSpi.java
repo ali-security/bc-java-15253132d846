@@ -55,6 +55,7 @@ import org.bouncycastle.jcajce.util.JcaJceHelper;
 import org.bouncycastle.jce.interfaces.BCKeyStore;
 import org.bouncycastle.jce.provider.BouncyCastleProvider;
 import org.bouncycastle.util.Arrays;
+import org.bouncycastle.util.Properties;
 import org.bouncycastle.util.io.Streams;
 import org.bouncycastle.util.io.TeeOutputStream;
 
@@ -855,6 +856,14 @@ public class BcKeyStoreSpi
             {
                 throw new IOException("Wrong version of key store.");
             }
+            // version 0/1 stores derive a 16-bit HMAC integrity key (the v2 branch below passes
+            // getMacSize() * 8, the legacy branch passes only getMacSize()), which is
+            // brute-forceable offline. The version field is read from the untrusted file, so only
+            // honour a downgraded version when the caller has explicitly opted in to v1 handling.
+            if (!Properties.isOverrideSet(Properties.BKS_ENABLE_V1))
+            {
+                throw new IOException("BKS version 1 keystore not supported (set " + Properties.BKS_ENABLE_V1 + " to read legacy stores)");
+            }
         }
 
         int saltLength = dIn.readInt();
@@ -1121,6 +1130,10 @@ public class BcKeyStoreSpi
         public Version1()
         {
             super(1);
+            if (!Properties.isOverrideSet(Properties.BKS_ENABLE_V1))
+            {
+                 throw new IllegalStateException("BKS-V1 not enabled");
+            }
         }
     }
 }
