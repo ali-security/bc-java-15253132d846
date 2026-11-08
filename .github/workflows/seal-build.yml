@@ -1,0 +1,128 @@
+# Seal build for bcprov-jdk15on (BouncyCastle 1.56). Upstream ships no GitHub Actions or
+# Travis CI; this mirrors the project's own `build15+` script: `ant -f ant/jdk15+.xml
+# build-provider` + `build`, then `ant -f ant/jdk15+.xml test` (every **/AllTests.java).
+# The release jar was compiled by Oracle JDK 7u80 (MANIFEST Originally-Created-By 24.95-b01,
+# source/target 1.5) and pack200-repacked; the suite runs on OpenJDK 8 because Oracle's JCE
+# refuses the unsigned, locally built BC provider.
+name: seal-build
+
+on:
+  workflow_dispatch:
+    inputs:
+      test-filter:
+        description: "Space-separated test class names (simple or fully qualified); empty runs the full ant test suite"
+        required: false
+        default: ""
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      JDK7: ${{ github.workspace }}/../toolchain/jdk1.7.0_80
+      JDK8: ${{ github.workspace }}/../toolchain/jdk8u292-b10
+      ANT_HOME: ${{ github.workspace }}/../toolchain/apache-ant-1.8.4
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain (Oracle JDK 7u80, AdoptOpenJDK 8u292, Ant 1.8.4, test jars)
+        run: |
+          set -euxo pipefail
+          TC="$GITHUB_WORKSPACE/../toolchain"
+          mkdir -p "$TC"
+          cd "$TC"
+          curl -fsSL --retry 5 --retry-delay 10 -o jdk7.tgz https://repo.huaweicloud.com/java/jdk/7u80-b15/jdk-7u80-linux-x64.tar.gz
+          echo "bad9a731639655118740bee119139c1ed019737ec802a630dd7ad7aab4309623  jdk7.tgz" | sha256sum -c -
+          tar -xzf jdk7.tgz
+          curl -fsSL --retry 5 --retry-delay 10 -o jdk8.tgz https://github.com/AdoptOpenJDK/openjdk8-binaries/releases/download/jdk8u292-b10/OpenJDK8U-jdk_x64_linux_hotspot_8u292b10.tar.gz
+          tar -xzf jdk8.tgz
+          curl -fsSL --retry 5 --retry-delay 10 -o ant.tgz https://archive.apache.org/dist/ant/binaries/apache-ant-1.8.4-bin.tar.gz
+          tar -xzf ant.tgz
+          rm -f jdk7.tgz jdk8.tgz ant.tgz
+          # bc-build.properties hardcodes these classpath locations
+          sudo mkdir -p /opt/junit /opt/javamail /opt/jaf
+          sudo chown -R "$(id -u):$(id -g)" /opt/junit /opt/javamail /opt/jaf
+          M=https://repo1.maven.org/maven2
+          curl -fsSL --retry 5 -o /opt/junit/junit.jar $M/junit/junit/4.11/junit-4.11.jar
+          curl -fsSL --retry 5 -o /opt/junit/hamcrest-core.jar $M/org/hamcrest/hamcrest-core/1.3/hamcrest-core-1.3.jar
+          # javax.mail exactly 1.4 (mail/build.gradle); 1.4.7 breaks NewSMIMESignedTest
+          curl -fsSL --retry 5 -o /opt/javamail/mail.jar $M/javax/mail/mail/1.4/mail-1.4.jar
+          curl -fsSL --retry 5 -o /opt/jaf/activation.jar $M/javax/activation/activation/1.1.1/activation-1.1.1.jar
+          cp /opt/junit/junit.jar "$ANT_HOME/lib/junit-4.11.jar"
+          cp /opt/junit/hamcrest-core.jar "$ANT_HOME/lib/hamcrest-core-1.3.jar"
+          "$JDK7/bin/java" -version
+          "$JDK8/bin/java" -version
+
+      - name: Build bcprov jar (Oracle JDK 7u80, ant build-provider + pack200 repack)
+        env:
+          LANG: C
+          LC_ALL: C
+        run: |
+          set -euxo pipefail
+          export JAVA_HOME="$JDK7"
+          export PATH="$JAVA_HOME/bin:$ANT_HOME/bin:$PATH"
+          java -version
+          ant -version
+          # Trimmed driver: drop the javadoc sub-targets (they contribute nothing to the jar)
+          sed -e '/target="javadoc-/d' ant/jdk15+.xml > ant/seal15+.xml
+          ant -f ant/seal15+.xml build-provider
+          PROV_JAR=build/artifacts/jdk1.5/jars/bcprov-jdk15on-156.jar
+          test -f "$PROV_JAR"
+          # Upstream's pack200-on target needs lib/Pack200Task.jar (not in the repo) -> repack directly,
+          # as the published jar (PACK200 marker) was
+          "$JDK7/bin/pack200" --repack --segment-limit=-1 "$PROV_JAR"
+          mkdir -p seal-dist
+          cp "$PROV_JAR" seal-dist/bcprov-jdk15on-1.56.jar
+          ls -l seal-dist
+          # bctest/pkix/mail/pg/tls jars needed by the test target
+          ant -f ant/seal15+.xml build
+
+      - name: Upload bcprov jar
+        uses: actions/upload-artifact@v4
+        with:
+          name: bcprov-jdk15on-1.56
+          path: seal-dist/bcprov-jdk15on-1.56.jar
+          if-no-files-found: error
+
+      - name: Test (ant test on OpenJDK 8u292)
+        env:
+          LANG: C.UTF-8
+          LC_ALL: C.UTF-8
+          JAVA_TOOL_OPTIONS: -Dfile.encoding=UTF-8
+          ANT_ARGS: -Dbuild.compiler=modern
+          ANT_OPTS: -Xmx1g
+          TEST_FILTER: ${{ inputs.test-filter }}
+        run: |
+          set -euo pipefail
+          export JAVA_HOME="$JDK8"
+          export PATH="$JAVA_HOME/bin:$ANT_HOME/bin:$PATH"
+          java -version
+          JARS=build/artifacts/jdk1.5/jars
+          REPORT_DIR=build/artifacts/jdk1.5/reports/xml
+          # Recompile test classes as UTF-8 (non-ASCII password literals, e.g. OpenBSDBCrypt)
+          rm -rf build/bctest-jdk15on-156/classes "$JARS/bctest-jdk15on-156.jar"
+          rm -f "$REPORT_DIR"/TEST-*.xml
+          if [ -n "$TEST_FILTER" ]; then
+            ant -f ant/seal15+.xml build-test
+            TSRC=build/artifacts/jdk1.5/bctest-jdk15on-156/src
+            CLASSES=()
+            for tok in $TEST_FILTER; do
+              tok=${tok%%#*}
+              tok=${tok%.java}
+              if [[ "$tok" == *.* ]]; then CLASSES+=("$tok"); continue; fi
+              matches=$(find "$TSRC" -name "${tok}.java" | sed -e "s|^${TSRC}/||" -e 's|\.java$||' -e 's|/|.|g' | sort)
+              if [ -z "$matches" ]; then echo "ERROR: no test class named '$tok' under $TSRC"; exit 1; fi
+              for m in $matches; do CLASSES+=("$m"); done
+            done
+            mkdir -p ../sealrunner
+            javac -nowarn -cp /opt/junit/junit.jar -d ../sealrunner .github/seal/SealTestRunner.java
+            CP=$(find "$PWD/$JARS" -maxdepth 1 -name '*.jar' ! -name 'bcprov-jdk*.jar' | sort | tr '\n' ':')
+            CP="${CP}/opt/junit/junit.jar:/opt/junit/hamcrest-core.jar:/opt/javamail/mail.jar:/opt/jaf/activation.jar:$PWD/../sealrunner"
+            mkdir -p build/jdk15on
+            cd build/jdk15on
+            java -cp "$CP" -Dbc.test.data.home=../../core/src/test/data SealTestRunner "${CLASSES[@]}"
+          else
+            # Full suite: upstream ant `test` target (all **/AllTests.java)
+            ant -f ant/seal15+.xml test
+            bash .github/seal/summarize-junit.sh "$REPORT_DIR" build/jdk1.5
+          fi
