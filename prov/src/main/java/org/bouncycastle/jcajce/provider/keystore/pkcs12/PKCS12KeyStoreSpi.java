@@ -95,6 +95,7 @@ import org.bouncycastle.jcajce.spec.GOST28147ParameterSpec;
 import org.bouncycastle.jcajce.spec.PBKDF2KeySpec;
 import org.bouncycastle.jcajce.util.BCJcaJceHelper;
 import org.bouncycastle.jcajce.util.JcaJceHelper;
+import org.bouncycastle.jce.PKCS12Util;
 import org.bouncycastle.jce.interfaces.BCKeyStore;
 import org.bouncycastle.jce.interfaces.PKCS12BagAttributeCarrier;
 import org.bouncycastle.jce.provider.BouncyCastleProvider;
@@ -612,7 +613,7 @@ public class PKCS12KeyStoreSpi
                 PKCS12PBEParams pbeParams = PKCS12PBEParams.getInstance(algId.getParameters());
                 PBEParameterSpec defParams = new PBEParameterSpec(
                     pbeParams.getIV(),
-                    pbeParams.getIterations().intValue());
+                    PKCS12Util.validateIterationCount(pbeParams.getIterations()));
 
                 Cipher cipher = helper.createCipher(algorithm.getId());
 
@@ -655,7 +656,7 @@ public class PKCS12KeyStoreSpi
             SecretKeyFactory keyFact =  helper.createSecretKeyFactory(algorithm);
             PBEParameterSpec defParams = new PBEParameterSpec(
                 pbeParams.getIV(),
-                pbeParams.getIterations().intValue());
+                PKCS12Util.validateIterationCount(pbeParams.getIterations()));
 
             Cipher cipher = helper.createCipher(algorithm);
 
@@ -691,7 +692,7 @@ public class PKCS12KeyStoreSpi
             {
                 PBEParameterSpec defParams = new PBEParameterSpec(
                     pbeParams.getIV(),
-                    pbeParams.getIterations().intValue());
+                    PKCS12Util.validateIterationCount(pbeParams.getIterations()));
                 PKCS12Key key = new PKCS12Key(password, wrongPKCS12Zero);
 
                 Cipher cipher = helper.createCipher(algorithm.getId());
@@ -735,11 +736,11 @@ public class PKCS12KeyStoreSpi
 
         if (func.isDefaultPrf())
         {
-            key = keyFact.generateSecret(new PBEKeySpec(password, func.getSalt(), func.getIterationCount().intValue(), keySizeProvider.getKeySize(encScheme)));
+            key = keyFact.generateSecret(new PBEKeySpec(password, func.getSalt(), PKCS12Util.validateIterationCount(func.getIterationCount()), keySizeProvider.getKeySize(encScheme)));
         }
         else
         {
-            key = keyFact.generateSecret(new PBKDF2KeySpec(password, func.getSalt(), func.getIterationCount().intValue(), keySizeProvider.getKeySize(encScheme), func.getPrf()));
+            key = keyFact.generateSecret(new PBKDF2KeySpec(password, func.getSalt(), PKCS12Util.validateIterationCount(func.getIterationCount()), keySizeProvider.getKeySize(encScheme), func.getPrf()));
         }
 
         Cipher cipher = Cipher.getInstance(alg.getEncryptionScheme().getAlgorithm().getId());
@@ -799,16 +800,19 @@ public class PKCS12KeyStoreSpi
 
         if (bag.getMacData() != null)           // check the mac code
         {
-            MacData mData = bag.getMacData();
-            DigestInfo dInfo = mData.getMac();
-            AlgorithmIdentifier algId = dInfo.getAlgorithmId();
-            byte[] salt = mData.getSalt();
-            int itCount = mData.getIterationCount().intValue();
-
-            byte[] data = ((ASN1OctetString)info.getContent()).getOctets();
-
             try
             {
+                // Reading the MAC parameters (iteration count, content octets) can throw
+                // unchecked exceptions on malformed input; keep them inside engineLoad's
+                // declared IOException by parsing them under the same guard as the MAC itself.
+                MacData mData = bag.getMacData();
+                DigestInfo dInfo = mData.getMac();
+                AlgorithmIdentifier algId = dInfo.getAlgorithmId();
+                byte[] salt = mData.getSalt();
+                int itCount = PKCS12Util.validateIterationCount(mData.getIterationCount());
+
+                byte[] data = ((ASN1OctetString)info.getContent()).getOctets();
+
                 byte[] res = calculatePbeMac(algId.getAlgorithm(), salt, itCount, password, false, data);
                 byte[] dig = dInfo.getDigest();
 

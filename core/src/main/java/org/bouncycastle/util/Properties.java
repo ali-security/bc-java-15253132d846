@@ -1,5 +1,6 @@
 package org.bouncycastle.util;
 
+import java.math.BigInteger;
 import java.security.AccessControlException;
 import java.security.AccessController;
 import java.security.PrivilegedAction;
@@ -31,6 +32,39 @@ public class Properties
         catch (AccessControlException e)
         {
             return false;
+        }
+    }
+
+    /**
+     * Return propertyName as a BigInteger, or null if the property is not set or not readable.
+     */
+    public static BigInteger asBigInteger(final String propertyName)
+    {
+        String value = getPropertyValue(propertyName);
+        if (value == null)
+        {
+            return null;
+        }
+
+        return new BigInteger(value.trim());
+    }
+
+    private static String getPropertyValue(final String propertyName)
+    {
+        try
+        {
+            return (String)AccessController.doPrivileged(new PrivilegedAction()
+            {
+                // JDK 1.4 compatibility
+                public Object run()
+                {
+                    return System.getProperty(propertyName);
+                }
+            });
+        }
+        catch (AccessControlException e)
+        {
+            return null;
         }
     }
 }
