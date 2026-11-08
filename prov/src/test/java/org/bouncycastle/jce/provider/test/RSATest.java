@@ -7,6 +7,8 @@ import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
 import java.math.BigInteger;
 import java.security.AlgorithmParameters;
+import java.security.InvalidKeyException;
+import java.security.Key;
 import java.security.KeyFactory;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
@@ -28,6 +30,7 @@ import java.security.spec.RSAPublicKeySpec;
 import java.security.spec.X509EncodedKeySpec;
 import java.util.HashSet;
 
+import javax.crypto.BadPaddingException;
 import javax.crypto.Cipher;
 import javax.crypto.NoSuchPaddingException;
 import javax.crypto.spec.OAEPParameterSpec;
@@ -47,6 +50,7 @@ import org.bouncycastle.asn1.x509.AlgorithmIdentifier;
 import org.bouncycastle.asn1.x509.DigestInfo;
 import org.bouncycastle.asn1.x509.SubjectPublicKeyInfo;
 import org.bouncycastle.asn1.x509.X509ObjectIdentifiers;
+import org.bouncycastle.jcajce.spec.TLSRSAPremasterSecretParameterSpec;
 import org.bouncycastle.jce.provider.BouncyCastleProvider;
 import org.bouncycastle.util.Arrays;
 import org.bouncycastle.util.encoders.Hex;
@@ -709,6 +713,9 @@ public class RSATest
         testGetExceptionsPKCS1();
         zeroMessageTest();
 
+        pkcs1DecryptionFailureTest(fact.generatePrivate(priv2048KeySpec), fact.generatePublic(pub2048KeySpec));
+        tlsPremasterSecretTest(fact.generatePrivate(priv2048KeySpec), fact.generatePublic(pub2048KeySpec), noCrtKey);
+
         oaepDigestCheck("SHA3-224", NISTObjectIdentifiers.id_sha3_224, pub2048Key, priv2048Key, rand, Hex.decode("2aa7812d4f7b7766f8625feb58481ef5b5fa6dfafbea543e4bbba89d6708f4900fc9fd55d5c2b83fefefc67e2ba7a4222217efaa9b9d31920bdcd78733319aca910dfd118aae5e901a6d27a56e37b1a6f86e7404f82da248e77845e58b789f10a1af8a1208f77dda384692609339346c4ea57928b890042e7d70b1d5817f8978dcbc9cd2fcdde37a0a41a52dbef701ddc859a5d58efd10aa5bd8d205c10154db906540bf20dedcff721df11a456df201cb9cbbd092a89a1eb3f11e7e34003d7070e02c8db54e5498e7ee262fb9178f5eb85d1db66baafe0a66e8283df9c41bded218e5d906d28f08803deb3cbd1a92777d55fe56ff022a47f673cac2ca145973"));
         oaepDigestCheck("SHA3-256", NISTObjectIdentifiers.id_sha3_256, pub2048Key, priv2048Key, rand, Hex.decode("4460e68586ac0ca1832274919c6b9159d40ea1d383a32ca28f0e1a81962289c8c904fa117d90afd7bfefa51b6889d2d999efb72bafd4beb5594bb08f62532ecb077e4968f43e70673341e60649ed64ac49cf1a2396a64577767d8958217a251938a7ac1bbc1aec9c9197a2eb9a375c74a01097fe3717c8bde04f8a20df85ef10a59070970a4a6470131654cecb641d46e464f17ddfe7e0595025bf25f025edbd56b19487cfc87de1642ca5190f289cf78e2c4b1cf90e73ffae331581c23febcf490c32299f2e5bd5a354a0cc996cc692b5a318777d17e734b3c487ad615df7af0fc361af564e6970ee0aa9b140634cdcf1eda91d1a1156326caaa608c4d43ee4"));
         oaepDigestCheck("SHA3-384", NISTObjectIdentifiers.id_sha3_384, pub2048Key, priv2048Key, rand, Hex.decode("1b9f490569bddac8ea77e3bec8d6d38b159cb88545de86065dbc8757b35fdeb0cce90eaf93ec6d69d691c590fc3feec9974b80e0c0068929c77533be2066b4002ad6d195e473f72e8581255b8d2dfff016ff27ed50e6d3e63cfaf50851b2d43833eea8dab3b4506f517875659099815a96be6e8fd2dc1417c6e3ffadcfd3f494a5544267688d114d3eeaf43ea954686656afb7a3dc2f8a4cdc5d7b90a97acbbe32ff17b3d26d7eb2a4fbc847d49cc8cb8f837646613d1b5a78096cf3f48acf4be95205e0c4cb283447029eae1442fe3813a017604dfd59a9e841473f4d8914860f785fb2194b21cba47cd401bc32720f3df373e59336c3d64c61babd474b4bbe"));
@@ -787,6 +794,272 @@ public class RSATest
             }
         }
         isTrue("exception count wrong", 1 == exceptions.size());
+    }
+
+    /**
+     * Build a PKCS#1 v1.5 block of the full modulus length: 0x00 || type || PS || 0x00 || M.
+     */
+    private static byte[] createPKCS1Block(PublicKey pubKey, int type, int padLen, byte[] message)
+    {
+        int k = (((RSAPublicKey)pubKey).getModulus().bitLength() + 7) / 8;
+
+        byte[] block = new byte[k];
+        block[0] = 0x00;
+        block[1] = (byte)type;
+        for (int i = 2; i != k - message.length - 1; i++)
+        {
+            block[i] = (type == 1) ? (byte)0xff : (byte)(0x11 + (i % 0xe0));       // non-zero padding
+        }
+        block[k - message.length - 1] = 0x00;
+        System.arraycopy(message, 0, block, k - message.length, message.length);
+
+        if (padLen >= 0)
+        {
+            // move the separator so the padding string is padLen bytes long
+            block[2 + padLen] = 0x00;
+        }
+
+        return block;
+    }
+
+    private static byte[] rawEncrypt(Key key, byte[] block)
+        throws Exception
+    {
+        Cipher c = Cipher.getInstance("RSA/NONE/NoPadding", "BC");
+
+        c.init(Cipher.ENCRYPT_MODE, key);
+
+        return c.doFinal(block);
+    }
+
+    /*
+     * CVE-2024-30171: a PKCS#1 v1.5 decryption failure must be reported without an internal
+     * exception being thrown and caught first (the throw/catch/throw is a timing side-channel).
+     */
+    private void pkcs1DecryptionFailureTest(PrivateKey privKey, PublicKey pubKey)
+        throws Exception
+    {
+        byte[] msg = Hex.decode("54859b342c49ea2a54859b342c49ea2a");
+        int k = (((RSAPublicKey)pubKey).getModulus().bitLength() + 7) / 8;
+
+        byte[][] badBlocks = new byte[][] {
+            createPKCS1Block(pubKey, 1, -1, msg),                       // wrong block type
+            createPKCS1Block(pubKey, 2, 7, msg),                        // padding string too short
+            createPKCS1Block(pubKey, 2, 0, msg),                        // no padding string
+        };
+
+        byte[] noSeparator = createPKCS1Block(pubKey, 2, -1, msg);
+        noSeparator[k - msg.length - 1] = 0x5a;                         // missing separator
+
+        String[] names = new String[] { "RSA/ECB/PKCS1Padding", "RSA/NONE/PKCS1Padding" };
+
+        for (int n = 0; n != names.length; n++)
+        {
+            Cipher c = Cipher.getInstance(names[n], "BC");
+
+            // a valid block still decrypts
+            c.init(Cipher.DECRYPT_MODE, privKey);
+            isTrue(names[n] + ": PKCS1 decrypt failed", areEqual(msg, c.doFinal(rawEncrypt(pubKey, createPKCS1Block(pubKey, 2, -1, msg)))));
+
+            byte[][] blocks = new byte[][] { badBlocks[0], badBlocks[1], badBlocks[2], noSeparator };
+            for (int i = 0; i != blocks.length; i++)
+            {
+                checkBadPadding(names[n] + "[" + i + "]", c, privKey, rawEncrypt(pubKey, blocks[i]));
+            }
+        }
+
+        // public key decryption (type 1, signature style blocks)
+        Cipher c = Cipher.getInstance("RSA/ECB/PKCS1Padding", "BC");
+
+        c.init(Cipher.DECRYPT_MODE, pubKey);
+        isTrue("PKCS1 type 1 decrypt failed", areEqual(msg, c.doFinal(rawEncrypt(privKey, createPKCS1Block(pubKey, 1, -1, msg)))));
+
+        checkBadPadding("type 2 with public key", c, pubKey, rawEncrypt(privKey, createPKCS1Block(pubKey, 2, -1, msg)));
+        checkBadPadding("short type 1 padding", c, pubKey, rawEncrypt(privKey, createPKCS1Block(pubKey, 1, 7, msg)));
+
+        // random ciphertexts (a small fraction of which will decode as valid PKCS1 blocks)
+        SecureRandom random = new SecureRandom();
+        byte[] ciphertext = new byte[k];
+        int failures = 0;
+        c = Cipher.getInstance("RSA/ECB/PKCS1Padding", "BC");
+        for (int i = 0; i != 100; i++)
+        {
+            random.nextBytes(ciphertext);
+            ciphertext[0] = 0;
+
+            c.init(Cipher.DECRYPT_MODE, privKey);
+            try
+            {
+                c.doFinal(ciphertext);
+            }
+            catch (BadPaddingException e)
+            {
+                isTrue("random ciphertext: wrong message: " + e.getMessage(), "unable to decrypt block".equals(e.getMessage()));
+                isTrue("random ciphertext: padding failure raised by internal exception: " + e.getCause(), e.getCause() == null);
+                failures++;
+            }
+        }
+        isTrue("random ciphertexts not rejected", failures > 50);
+    }
+
+    private void checkBadPadding(String label, Cipher c, Key key, byte[] ciphertext)
+        throws Exception
+    {
+        c.init(Cipher.DECRYPT_MODE, key);
+
+        try
+        {
+            c.doFinal(ciphertext);
+
+            fail(label + ": bad PKCS1 block not rejected");
+        }
+        catch (BadPaddingException e)
+        {
+            isTrue(label + ": wrong message: " + e.getMessage(), "unable to decrypt block".equals(e.getMessage()));
+            isTrue(label + ": padding failure raised by internal exception: " + e.getCause(), e.getCause() == null);
+        }
+    }
+
+    /*
+     * CVE-2024-30171: in TLS mode the RSA cipher decrypts an RSA-encrypted premaster secret with implicit
+     * rejection - no exception for a bad padding or version, but a random 48 byte value.
+     */
+    private void tlsPremasterSecretTest(PrivateKey privKey, PublicKey pubKey, PrivateKey noCrtKey)
+        throws Exception
+    {
+        SecureRandom random = new SecureRandom();
+        int k = (((RSAPublicKey)pubKey).getModulus().bitLength() + 7) / 8;
+
+        byte[] pms = new byte[48];
+        random.nextBytes(pms);
+        pms[0] = 0x03;
+        pms[1] = 0x03;
+
+        Cipher enc = Cipher.getInstance("RSA/ECB/PKCS1Padding", "BC");
+        enc.init(Cipher.ENCRYPT_MODE, pubKey, random);
+        byte[] encrypted = enc.doFinal(pms);
+
+        byte[] wrongVersionPms = Arrays.clone(pms);
+        wrongVersionPms[1] = 0x01;
+        byte[] wrongVersion = enc.doFinal(wrongVersionPms);
+
+        String[] names = new String[] { "RSA/ECB/PKCS1Padding", "RSA/NONE/PKCS1Padding", "RSA" };
+
+        for (int n = 0; n != names.length; n++)
+        {
+            String name = names[n];
+            Cipher c = Cipher.getInstance(name, "BC");
+
+            c.init(Cipher.DECRYPT_MODE, privKey, new TLSRSAPremasterSecretParameterSpec(0x0303), random);
+
+            isTrue(name + ": TLS premaster secret decrypt failed", areEqual(pms, c.doFinal(encrypted)));
+
+            // input offset and length are honoured
+            byte[] buf = Arrays.concatenate(new byte[5], encrypted, new byte[3]);
+            isTrue(name + ": TLS premaster secret decrypt with offset failed", areEqual(pms, c.doFinal(buf, 5, encrypted.length)));
+
+            // wrong version - implicit rejection
+            checkTlsRejection(name + ": wrong version", c, wrongVersion, wrongVersionPms);
+
+            // expected version differs from the encrypted one
+            c.init(Cipher.DECRYPT_MODE, privKey, new TLSRSAPremasterSecretParameterSpec(0x0302), random);
+            checkTlsRejection(name + ": unexpected version", c, encrypted, pms);
+
+            c.init(Cipher.DECRYPT_MODE, privKey, new TLSRSAPremasterSecretParameterSpec(0x0303), random);
+
+            // bad encodings - implicit rejection
+            checkTlsRejection(name + ": block type 1", c, rawEncrypt(pubKey, createPKCS1Block(pubKey, 1, -1, pms)), pms);
+            checkTlsRejection(name + ": short padding", c, rawEncrypt(pubKey, createPKCS1Block(pubKey, 2, 7, pms)), null);
+
+            byte[] noSeparator = createPKCS1Block(pubKey, 2, -1, pms);
+            noSeparator[k - pms.length - 1] = 0x5a;
+            checkTlsRejection(name + ": missing separator", c, rawEncrypt(pubKey, noSeparator), pms);
+
+            byte[] shortPms = Arrays.copyOfRange(pms, 0, 47);
+            byte[] block = createPKCS1Block(pubKey, 2, -1, shortPms);
+            checkTlsRejection(name + ": short premaster secret", c, rawEncrypt(pubKey, block), Arrays.copyOfRange(block, k - 48, k));
+
+            // ciphertext out of range
+            byte[] modulus = ((RSAPublicKey)pubKey).getModulus().toByteArray();
+            checkTlsRejection(name + ": ciphertext too large", c, modulus, null);
+
+            byte[] ciphertext = new byte[k];
+            for (int i = 0; i != 20; i++)
+            {
+                random.nextBytes(ciphertext);
+                ciphertext[0] = 0;
+                checkTlsRejection(name + ": random ciphertext", c, ciphertext, null);
+            }
+
+            // TLS mode is a one-shot decryption only
+            try
+            {
+                c.update(encrypted);
+                fail(name + ": no exception on update");
+            }
+            catch (IllegalStateException e)
+            {
+                isTrue(name + ": wrong message: " + e.getMessage(), "RSA cipher initialized for TLS only".equals(e.getMessage()));
+            }
+
+            try
+            {
+                c.doFinal(encrypted, 0, encrypted.length, new byte[k], 0);
+                fail(name + ": no exception on doFinal to output buffer");
+            }
+            catch (IllegalStateException e)
+            {
+                isTrue(name + ": wrong message: " + e.getMessage(), "RSA cipher initialized for TLS only".equals(e.getMessage()));
+            }
+
+            // a CRT private key is required
+            try
+            {
+                c.init(Cipher.DECRYPT_MODE, noCrtKey, new TLSRSAPremasterSecretParameterSpec(0x0303), random);
+                fail(name + ": no exception for non-CRT key");
+            }
+            catch (InvalidKeyException e)
+            {
+                isTrue(name + ": wrong message: " + e.getMessage(), "RSA private key required for TLS decryption".equals(e.getMessage()));
+            }
+
+            // reinitialising without the spec returns the cipher to normal operation
+            c.init(Cipher.DECRYPT_MODE, privKey);
+            byte[] out = c.doFinal(encrypted);
+            if (name.equals("RSA"))
+            {
+                isTrue(name + ": raw decrypt after TLS mode failed", areEqual(pms, Arrays.copyOfRange(out, out.length - 48, out.length)));
+            }
+            else
+            {
+                isTrue(name + ": decrypt after TLS mode failed", areEqual(pms, out));
+            }
+        }
+    }
+
+    private void checkTlsRejection(String label, Cipher c, byte[] ciphertext, byte[] embedded)
+        throws Exception
+    {
+        byte[] r1, r2;
+        try
+        {
+            r1 = c.doFinal(ciphertext);
+            r2 = c.doFinal(ciphertext);
+        }
+        catch (Exception e)
+        {
+            fail(label + ": exception thrown: " + e, e);
+            return;
+        }
+
+        isTrue(label + ": wrong length", 48 == r1.length);
+        isTrue(label + ": wrong length", 48 == r2.length);
+        isTrue(label + ": result not random", !areEqual(r1, r2));
+        if (embedded != null)
+        {
+            isTrue(label + ": decrypted data returned", !areEqual(embedded, r1));
+            isTrue(label + ": decrypted data returned", !areEqual(embedded, r2));
+        }
     }
 
     public void zeroMessageTest()

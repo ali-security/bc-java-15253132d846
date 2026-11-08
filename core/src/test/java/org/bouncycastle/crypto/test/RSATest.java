@@ -175,6 +175,170 @@ public class RSATest
         }
     }
 
+    /**
+     * Build a PKCS#1 v1.5 type 2 (encryption) block of the full modulus length: 0x00 || 0x02 || PS || 0x00 || M,
+     * where PS is padLen non-zero bytes.
+     */
+    private static byte[] createType2Block(int blockLength, int padLen, byte[] message)
+    {
+        byte[] block = new byte[blockLength];
+
+        block[0] = 0x00;
+        block[1] = 0x02;
+        for (int i = 0; i != padLen; i++)
+        {
+            block[2 + i] = (byte)(0x11 + (i % 0xe0));       // non-zero padding
+        }
+        block[2 + padLen] = 0x00;
+        System.arraycopy(message, 0, block, 3 + padLen, message.length);
+
+        return block;
+    }
+
+    private static byte[] rawEncrypt(RSAKeyParameters pubParameters, byte[] block)
+    {
+        AsymmetricBlockCipher eng = new RSAEngine();
+
+        eng.init(true, pubParameters);
+
+        try
+        {
+            return eng.processBlock(block, 0, block.length);
+        }
+        catch (InvalidCipherTextException e)
+        {
+            throw new IllegalStateException("raw RSA encryption failed: " + e.getMessage());
+        }
+    }
+
+    private static byte[] createMessage(int length, int seed)
+    {
+        byte[] message = new byte[length];
+        for (int i = 0; i != message.length; i++)
+        {
+            message[i] = (byte)(seed + i);
+        }
+        return message;
+    }
+
+    private byte[] fixedLengthDecrypt(RSAKeyParameters privParameters, byte[] fallback, byte[] cipherText)
+    {
+        PKCS1Encoding eng = new PKCS1Encoding(new RSAEngine(), fallback);
+
+        eng.init(false, new ParametersWithRandom(privParameters, new SecureRandom()));
+
+        try
+        {
+            return eng.processBlock(cipherText, 0, cipherText.length);
+        }
+        catch (Exception e)
+        {
+            fail("RSA: fixed length decryption threw exception " + e.toString(), e);
+            return null;
+        }
+    }
+
+    /*
+     * CVE-2024-30171: the fixed length (implicit rejection) decoding must enforce the full PKCS#1 v1.5
+     * format - including the minimum of 8 padding bytes - and must return the fallback, rather than the
+     * decrypted data, for any malformed block.
+     */
+    private void testFixedLengthPKCS1ShortPadding(RSAKeyParameters pubParameters, RSAKeyParameters privParameters)
+    {
+        int blockLength = (mod.bitLength() + 7) / 8;
+
+        // padding string shorter than the 8 bytes required by PKCS#1 v1.5
+        for (int padLen = 0; padLen < 8; padLen++)
+        {
+            byte[] message = createMessage(blockLength - 3 - padLen, padLen);
+            byte[] fallback = createMessage(message.length, 0x80 + padLen);
+
+            byte[] cipherText = rawEncrypt(pubParameters, createType2Block(blockLength, padLen, message));
+            byte[] result = fixedLengthDecrypt(privParameters, fallback, cipherText);
+
+            isTrue("short padding (" + padLen + ") accepted by fixed length PKCS1 decoding", Arrays.areEqual(fallback, result));
+
+            // the variable length decoding must reject it too
+            checkPKCS1DecryptionFailure(privParameters, cipherText);
+        }
+
+        // minimum (8 bytes) padding is accepted
+        byte[] message = createMessage(blockLength - 3 - 8, 0x20);
+        byte[] fallback = createMessage(message.length, 0xa0);
+
+        byte[] cipherText = rawEncrypt(pubParameters, createType2Block(blockLength, 8, message));
+
+        isTrue("minimum padding rejected by fixed length PKCS1 decoding",
+            Arrays.areEqual(message, fixedLengthDecrypt(privParameters, fallback, cipherText)));
+    }
+
+    private void testFixedLengthPKCS1BadEncodings(RSAKeyParameters pubParameters, RSAKeyParameters privParameters)
+    {
+        int blockLength = (mod.bitLength() + 7) / 8;
+        byte[] message = createMessage(48, 0x03);
+        byte[] fallback = createMessage(48, 0x60);
+        int padLen = blockLength - 3 - message.length;
+
+        byte[] good = createType2Block(blockLength, padLen, message);
+
+        isTrue("valid block not decoded by fixed length PKCS1 decoding",
+            Arrays.areEqual(message, fixedLengthDecrypt(privParameters, fallback, rawEncrypt(pubParameters, good))));
+
+        // wrong block type
+        byte[] block = Arrays.clone(good);
+        block[1] = 0x01;
+        isTrue("block type 1 accepted by fixed length PKCS1 decoding",
+            Arrays.areEqual(fallback, fixedLengthDecrypt(privParameters, fallback, rawEncrypt(pubParameters, block))));
+
+        // non-zero leading byte (block is too long)
+        block = Arrays.clone(good);
+        block[0] = 0x01;
+        isTrue("non-zero leading byte accepted by fixed length PKCS1 decoding",
+            Arrays.areEqual(fallback, fixedLengthDecrypt(privParameters, fallback, rawEncrypt(pubParameters, block))));
+
+        // zero byte inside the padding string
+        block = Arrays.clone(good);
+        block[2 + padLen / 2] = 0x00;
+        isTrue("zero padding byte accepted by fixed length PKCS1 decoding",
+            Arrays.areEqual(fallback, fixedLengthDecrypt(privParameters, fallback, rawEncrypt(pubParameters, block))));
+
+        // missing zero separator before the message
+        block = Arrays.clone(good);
+        block[2 + padLen] = 0x5a;
+        isTrue("missing separator accepted by fixed length PKCS1 decoding",
+            Arrays.areEqual(fallback, fixedLengthDecrypt(privParameters, fallback, rawEncrypt(pubParameters, block))));
+
+        // message of a different length than expected
+        byte[] shortMessage = createMessage(47, 0x03);
+        block = createType2Block(blockLength, blockLength - 3 - shortMessage.length, shortMessage);
+        isTrue("wrong message length accepted by fixed length PKCS1 decoding",
+            Arrays.areEqual(fallback, fixedLengthDecrypt(privParameters, fallback, rawEncrypt(pubParameters, block))));
+
+        // two leading zero bytes (block is too short)
+        block = new byte[blockLength];
+        System.arraycopy(good, 0, block, 1, blockLength - 1);
+        isTrue("short block accepted by fixed length PKCS1 decoding",
+            Arrays.areEqual(fallback, fixedLengthDecrypt(privParameters, fallback, rawEncrypt(pubParameters, block))));
+    }
+
+    private void checkPKCS1DecryptionFailure(RSAKeyParameters privParameters, byte[] cipherText)
+    {
+        AsymmetricBlockCipher eng = new PKCS1Encoding(new RSAEngine());
+
+        eng.init(false, privParameters);
+
+        try
+        {
+            eng.processBlock(cipherText, 0, cipherText.length);
+
+            fail("bad PKCS1 block not recognised");
+        }
+        catch (InvalidCipherTextException e)
+        {
+            isTrue("RSA: wrong exception message " + e.getMessage(), "block incorrect".equals(e.getMessage()));
+        }
+    }
+
     private void testOAEP(RSAKeyParameters pubParameters, RSAKeyParameters privParameters)
     {
         //
@@ -551,6 +715,8 @@ public class RSATest
         testMissingDataPKCS1Block(pubParameters, privParameters);
         testTruncatedPKCS1Block(pubParameters, privParameters);
         testWrongPaddingPKCS1Block(pubParameters, privParameters);
+        testFixedLengthPKCS1ShortPadding(pubParameters, privParameters);
+        testFixedLengthPKCS1BadEncodings(pubParameters, privParameters);
 
         try
         {

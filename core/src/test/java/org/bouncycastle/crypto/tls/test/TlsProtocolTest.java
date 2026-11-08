@@ -7,6 +7,7 @@ import java.security.SecureRandom;
 
 import junit.framework.TestCase;
 
+import org.bouncycastle.crypto.tls.CipherSuite;
 import org.bouncycastle.crypto.tls.TlsClientProtocol;
 import org.bouncycastle.crypto.tls.TlsServerProtocol;
 import org.bouncycastle.util.Arrays;
@@ -16,6 +17,35 @@ public class TlsProtocolTest
     extends TestCase
 {
     public void testClientServer()
+        throws Exception
+    {
+        runClientServer(new MockTlsClient(null));
+    }
+
+    /*
+     * Force the RSA key exchange, so the server decrypts the premaster secret via
+     * TlsRSAUtils.safeDecryptPreMasterSecret.
+     */
+    public void testClientServerRSAKeyExchange()
+        throws Exception
+    {
+        runClientServer(new MockTlsClient(null)
+        {
+            public int[] getCipherSuites()
+            {
+                return new int[]{ CipherSuite.TLS_RSA_WITH_AES_128_CBC_SHA };
+            }
+
+            public void notifySelectedCipherSuite(int selectedCipherSuite)
+            {
+                assertEquals(CipherSuite.TLS_RSA_WITH_AES_128_CBC_SHA, selectedCipherSuite);
+
+                super.notifySelectedCipherSuite(selectedCipherSuite);
+            }
+        });
+    }
+
+    private void runClientServer(MockTlsClient client)
         throws Exception
     {
         SecureRandom secureRandom = new SecureRandom();
@@ -31,7 +61,6 @@ public class TlsProtocolTest
         ServerThread serverThread = new ServerThread(serverProtocol);
         serverThread.start();
 
-        MockTlsClient client = new MockTlsClient(null);
         clientProtocol.connect(client);
 
         // NOTE: Because we write-all before we read-any, this length can't be more than the pipe capacity
