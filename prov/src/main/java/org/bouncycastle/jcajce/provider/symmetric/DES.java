@@ -322,13 +322,20 @@ public final class DES
                     return new BCPBEKey(this.algName, this.algOid, scheme, digest, keySize, ivSize, pbeSpec, null);
                 }
 
-                if (forCipher)
+                try
                 {
-                    param = PBE.Util.makePBEParameters(pbeSpec, scheme, digest, keySize, ivSize);
+                    if (forCipher)
+                    {
+                        param = PBE.Util.makePBEParameters(pbeSpec, scheme, digest, keySize, ivSize);
+                    }
+                    else
+                    {
+                        param = PBE.Util.makePBEMacParameters(pbeSpec, scheme, digest, keySize);
+                    }
                 }
-                else
+                catch (IllegalArgumentException e)
                 {
-                    param = PBE.Util.makePBEMacParameters(pbeSpec, scheme, digest, keySize);
+                    throw new InvalidKeySpecException(e.getMessage(), e);
                 }
 
                 KeyParameter kParam;

@@ -18,6 +18,7 @@ public class RegressionTest
         new AESSICTest(),
         new GOST28147Test(),
         new PBETest(),
+        new PBEIterationCountTest(),
         new BlockCipherTest(),
         new MacTest(),
         new HMacTest(),
