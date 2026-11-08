@@ -17,6 +17,7 @@ import org.bouncycastle.crypto.params.ParametersWithRandom;
 import org.bouncycastle.crypto.params.RSAKeyGenerationParameters;
 import org.bouncycastle.crypto.params.RSAKeyParameters;
 import org.bouncycastle.crypto.params.RSAPrivateCrtKeyParameters;
+import org.bouncycastle.math.Primes;
 import org.bouncycastle.util.Arrays;
 import org.bouncycastle.util.encoders.Hex;
 import org.bouncycastle.util.test.SimpleTest;
@@ -397,6 +398,82 @@ public class RSATest
 
     }
 
+    /**
+     * The number of Miller-Rabin rounds applied to a candidate prime must be derived from the
+     * bit length of the prime itself (FIPS 186-4 C.3), not from the (larger) key strength.
+     */
+    private void testPrimeMRIterations()
+    {
+        // 1024 bit key, 512 bit prime: certainty 100 requires 7 rounds (not the 4 used for 1024 bits)
+        checkPrimeMRIterations(1024, p, 7);
+
+        // 2048 bit key, 1024 bit prime: certainty 100 requires 4 rounds (not the 3 used for 2048 bits)
+        BigInteger prime1024 = new BigInteger(1024, 100, new SecureRandom());
+        checkPrimeMRIterations(2048, prime1024, 4);
+    }
+
+    private void checkPrimeMRIterations(int strength, BigInteger prime, int expectedIterations)
+    {
+        CountingSecureRandom random = new CountingSecureRandom();
+
+        // the random calls Primes makes for the expected number of rounds
+        if (!Primes.isMRProbablePrime(prime, random, expectedIterations))
+        {
+            fail("prime failed MR test");
+        }
+        int expectedCalls = random.getCount();
+
+        MRCheckingRSAKeyPairGenerator kpGen = new MRCheckingRSAKeyPairGenerator();
+        kpGen.init(new RSAKeyGenerationParameters(pubExp, random, strength, 100));
+
+        random.reset();
+        if (!kpGen.checkProbablePrime(prime))
+        {
+            fail("prime rejected by RSAKeyPairGenerator");
+        }
+
+        if (random.getCount() != expectedCalls)
+        {
+            fail("wrong number of MR iterations for " + prime.bitLength() + " bit prime in "
+                + strength + " bit key: random calls " + random.getCount() + ", expected " + expectedCalls);
+        }
+    }
+
+    private static class MRCheckingRSAKeyPairGenerator
+        extends RSAKeyPairGenerator
+    {
+        boolean checkProbablePrime(BigInteger x)
+        {
+            return isProbablePrime(x);
+        }
+    }
+
+    private static class CountingSecureRandom
+        extends SecureRandom
+    {
+        private int count = 0;
+
+        public void nextBytes(byte[] bytes)
+        {
+            count++;
+            // fixed output so the bases chosen (and calls made) are deterministic
+            for (int i = 0; i != bytes.length; i++)
+            {
+                bytes[i] = (byte)0x5a;
+            }
+        }
+
+        int getCount()
+        {
+            return count;
+        }
+
+        void reset()
+        {
+            count = 0;
+        }
+    }
+
     private void zeroBlockTest(CipherParameters encParameters, CipherParameters decParameters)
     {
         AsymmetricBlockCipher eng = new PKCS1Encoding(new RSAEngine());
@@ -708,6 +785,8 @@ public class RSATest
                 fail("P and Q too close in RSA key pair");
             }
         }
+
+        testPrimeMRIterations();
 
         testOAEP(pubParameters, privParameters);
         testStrictPKCS1Length(pubParameters, privParameters);
