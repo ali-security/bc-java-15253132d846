@@ -2,6 +2,9 @@ package org.bouncycastle.jce.provider.test.nist;
 
 import java.io.FileInputStream;
 import java.io.InputStream;
+import java.math.BigInteger;
+import java.security.KeyPair;
+import java.security.KeyPairGenerator;
 import java.security.Security;
 import java.security.cert.CertPath;
 import java.security.cert.CertStore;
@@ -28,9 +31,15 @@ import junit.framework.TestCase;
 import junit.framework.TestSuite;
 import org.bouncycastle.asn1.ASN1Encoding;
 import org.bouncycastle.asn1.ASN1Primitive;
+import org.bouncycastle.asn1.x509.BasicConstraints;
+import org.bouncycastle.asn1.x509.GeneralName;
+import org.bouncycastle.asn1.x509.GeneralNames;
 import org.bouncycastle.asn1.x509.X509Extension;
+import org.bouncycastle.asn1.x509.X509Extensions;
+import org.bouncycastle.jce.X509Principal;
 import org.bouncycastle.i18n.ErrorBundle;
 import org.bouncycastle.x509.PKIXCertPathReviewer;
+import org.bouncycastle.x509.X509V3CertificateGenerator;
 import org.bouncycastle.x509.extension.X509ExtensionUtil;
 
 /**
@@ -64,6 +73,80 @@ public class NistCertPathReviewerTest
     private static Set   nistTestPolicy3 = Collections.singleton(NIST_TEST_POLICY_3);
     private static Set   nistTestPolicy1And2 = new HashSet(Arrays.asList(new String[] { NIST_TEST_POLICY_1, NIST_TEST_POLICY_2 }));
         
+    /**
+     * CVE-2025-8916: the reviewer must refuse a subject alternative name extension with more than
+     * 1024 names instead of checking each one against the name constraints.
+     */
+    public void testSubjectAltNameLimit()
+        throws Exception
+    {
+        assertFalse(hasSubjAltNameError(1024));
+        assertTrue(hasSubjAltNameError(1025));
+    }
+
+    private static X509Certificate makeCert(String issuer, String subject, KeyPair subjectKp, java.security.PrivateKey signer,
+        int serial, int pathLen, GeneralName[] altNames)
+        throws Exception
+    {
+        long now = System.currentTimeMillis();
+        X509V3CertificateGenerator gen = new X509V3CertificateGenerator();
+        gen.setSerialNumber(BigInteger.valueOf(serial));
+        gen.setIssuerDN(new X509Principal(issuer));
+        gen.setSubjectDN(new X509Principal(subject));
+        gen.setNotBefore(new java.util.Date(now - 60000L));
+        gen.setNotAfter(new java.util.Date(now + 86400000L));
+        gen.setPublicKey(subjectKp.getPublic());
+        gen.setSignatureAlgorithm("SHA256withRSA");
+        if (pathLen >= 0)
+        {
+            gen.addExtension(X509Extensions.BasicConstraints, true, new BasicConstraints(pathLen));
+        }
+        if (altNames != null)
+        {
+            gen.addExtension(X509Extensions.SubjectAlternativeName, false, new GeneralNames(altNames));
+        }
+        return gen.generate(signer, "BC");
+    }
+
+    private boolean hasSubjAltNameError(int nameCount)
+        throws Exception
+    {
+        KeyPairGenerator kpGen = KeyPairGenerator.getInstance("RSA", "BC");
+        kpGen.initialize(1024);
+        KeyPair rootKp = kpGen.generateKeyPair();
+        KeyPair intKp = kpGen.generateKeyPair();
+        KeyPair eeKp = kpGen.generateKeyPair();
+
+        GeneralName[] names = new GeneralName[nameCount];
+        for (int i = 0; i != nameCount; i++)
+        {
+            names[i] = new GeneralName(GeneralName.dNSName, "host" + i + ".example.com");
+        }
+
+        // the reviewer checks the subject alt names of each CA certificate in the path
+        X509Certificate rootCert = makeCert("CN=Name Limit Root", "CN=Name Limit Root", rootKp, rootKp.getPrivate(), 1, 1, null);
+        X509Certificate intCert = makeCert("CN=Name Limit Root", "CN=Name Limit CA", intKp, rootKp.getPrivate(), 2, 0, names);
+        X509Certificate eeCert = makeCert("CN=Name Limit CA", "CN=Name Limit EE", eeKp, intKp.getPrivate(), 3, -1, null);
+
+        List path = new ArrayList();
+        path.add(eeCert);
+        path.add(intCert);
+        CertPath certPath = CertificateFactory.getInstance("X.509", "BC").generateCertPath(path);
+        PKIXParameters params = new PKIXParameters(Collections.singleton(new TrustAnchor(rootCert, null)));
+        params.setRevocationEnabled(false);
+        PKIXCertPathReviewer reviewer = new PKIXCertPathReviewer(certPath, params);
+
+        List errors = reviewer.getErrors(1);
+        for (int i = 0; i != errors.size(); i++)
+        {
+            if ("CertPathReviewer.subjAltNameExtError".equals(((ErrorBundle)errors.get(i)).getId()))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
     public void testValidSignaturesTest1()
         throws Exception
     {
