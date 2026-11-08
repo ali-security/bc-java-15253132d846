@@ -450,6 +450,7 @@ public class ASN1InputStream
             case NUMERIC_STRING:
                 return new DERNumericString(defIn.toByteArray());
             case OBJECT_IDENTIFIER:
+                ASN1ObjectIdentifier.checkContentsLength(defIn.getRemaining());
                 return ASN1ObjectIdentifier.fromOctetString(getBuffer(defIn, tmpBuffers));
             case OCTET_STRING:
                 return new DEROctetString(defIn.toByteArray());

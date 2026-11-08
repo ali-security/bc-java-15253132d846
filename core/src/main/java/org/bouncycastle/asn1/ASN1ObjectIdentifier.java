@@ -82,9 +82,21 @@ public class ASN1ObjectIdentifier
 
     private static final long LONG_LIMIT = (Long.MAX_VALUE >> 7) - 0x7f;
 
+    /**
+     * Implementation limit on the length of the contents octets for an Object Identifier.
+     * We adopt the same value used by OpenJDK. In theory there is no limit on the length of the contents, or
+     * the number of subidentifiers, or the length of individual subidentifiers. In practice, supporting
+     * arbitrary lengths can lead to issues, e.g. denial-of-service attacks when attempting to convert a
+     * parsed value to its (decimal) string form.
+     */
+    private static final int MAX_CONTENTS_LENGTH = 4096;
+    private static final int MAX_IDENTIFIER_LENGTH = MAX_CONTENTS_LENGTH * 4 + 1;
+
     ASN1ObjectIdentifier(
         byte[] bytes)
     {
+        checkContentsLength(bytes.length);
+
         StringBuffer objId = new StringBuffer();
         long value = 0;
         BigInteger bigValue = null;
@@ -171,6 +183,10 @@ public class ASN1ObjectIdentifier
         {
             throw new IllegalArgumentException("'identifier' cannot be null");
         }
+        if (identifier.length() > MAX_IDENTIFIER_LENGTH)
+        {
+            throw new IllegalArgumentException("exceeded OID contents length limit");
+        }
         if (!isValidIdentifier(identifier))
         {
             throw new IllegalArgumentException("string " + identifier + " not an OID");
@@ -190,6 +206,10 @@ public class ASN1ObjectIdentifier
         if (!isValidBranchID(branchID, 0))
         {
             throw new IllegalArgumentException("string " + branchID + " not a valid OID branch");
+        }
+        if (oid.getId().length() + 1 + branchID.length() > MAX_IDENTIFIER_LENGTH)
+        {
+            throw new IllegalArgumentException("exceeded OID contents length limit");
         }
 
         this.identifier = oid.getId() + "." + branchID;
@@ -464,8 +484,17 @@ public class ASN1ObjectIdentifier
         }
     }
 
+    static void checkContentsLength(int contentsLength)
+    {
+        if (contentsLength > MAX_CONTENTS_LENGTH)
+        {
+            throw new IllegalArgumentException("exceeded OID contents length limit");
+        }
+    }
+
     static ASN1ObjectIdentifier fromOctetString(byte[] enc)
     {
+        checkContentsLength(enc.length);
         final OidHandle hdl = new OidHandle(enc);
         ASN1ObjectIdentifier oid = pool.get(hdl);
         if (oid == null)

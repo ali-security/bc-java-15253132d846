@@ -118,9 +118,59 @@ public class OIDTest
         }
     }
 
+    private static byte[] oidEncoding(int contentsLength)
+    {
+        byte[] enc = new byte[4 + contentsLength];
+        enc[0] = 0x06;
+        enc[1] = (byte)0x82;
+        enc[2] = (byte)(contentsLength >> 8);
+        enc[3] = (byte)contentsLength;
+        enc[4] = 0x2a;
+        for (int i = 5; i < enc.length; i++)
+        {
+            enc[i] = 0x01;
+        }
+        return enc;
+    }
+
+    private void contentsLengthLimitCheck()
+        throws IOException
+    {
+        // CVE-2025-8885: OID contents are capped at 4096 octets, and the identifier at 16385 chars.
+        ASN1ObjectIdentifier atLimit = (ASN1ObjectIdentifier)new ASN1InputStream(oidEncoding(4096)).readObject();
+        isTrue("4096-octet OID must parse", atLimit.getId().startsWith("1.2.1.1"));
+
+        try
+        {
+            new ASN1InputStream(oidEncoding(4097)).readObject();
+            fail("4097-octet OID must be rejected");
+        }
+        catch (IOException e)
+        {
+            // expected
+        }
+
+        StringBuffer id = new StringBuffer("1.2");
+        while (id.length() <= 16385)
+        {
+            id.append(".1");
+        }
+        try
+        {
+            new ASN1ObjectIdentifier(id.toString());
+            fail("OID string over 16385 chars must be rejected");
+        }
+        catch (IllegalArgumentException e)
+        {
+            // expected
+        }
+    }
+
     public void performTest()
         throws IOException
     {
+        contentsLengthLimitCheck();
+
         recodeCheck("2.100.3", req1);
         recodeCheck("1.2.54.34359733987.17", req2);
         
