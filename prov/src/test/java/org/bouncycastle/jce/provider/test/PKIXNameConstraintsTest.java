@@ -214,6 +214,89 @@ public class PKIXNameConstraintsTest
             uriintersect);
         testConstraints(GeneralName.iPAddress, testIP, testIPIsConstraint,
             testIPIsNotConstraint, ip1, ip2, ipunion, ipintersect);
+        testNameConstraintBypasses();
+    }
+
+    private void testNameConstraintBypasses()
+        throws Exception
+    {
+        // An RFC 1034 root-label trailing dot must not let a host escape an excluded rfc822Name,
+        // URI or dNSName subtree.
+        checkExcludedTrailingDot(GeneralName.rfc822Name, "bank.com", "ceo@bank.com.");
+        checkExcludedTrailingDot(GeneralName.rfc822Name, "ceo@bank.com", "ceo@bank.com.");
+        checkExcludedTrailingDot(GeneralName.rfc822Name, ".bank.com", "ceo@mail.bank.com.");
+        checkExcludedTrailingDot(GeneralName.uniformResourceIdentifier, "competitor.example", "https://competitor.example./");
+        checkExcludedTrailingDot(GeneralName.uniformResourceIdentifier, ".competitor.example", "https://www.competitor.example./");
+        checkExcludedTrailingDot(GeneralName.dNSName, "bank.com", "bank.com.");
+        checkExcludedTrailingDot(GeneralName.dNSName, "bank.com", "www.bank.com.");
+
+        // an empty label (second trailing dot, doubled dot, leading dot) is refused, not canonicalised
+        checkExcludedTrailingDot(GeneralName.rfc822Name, "bank.com", "ceo@bank.com..");
+        checkExcludedTrailingDot(GeneralName.uniformResourceIdentifier, "competitor.example", "https://competitor.example../");
+        checkExcludedTrailingDot(GeneralName.dNSName, "bank.com", "bank.com..");
+        checkExcludedTrailingDot(GeneralName.dNSName, "bank.com", "www..bank.com");
+        // a tested mailbox with more than one '@' is ambiguous and refused
+        checkExcludedTrailingDot(GeneralName.rfc822Name, "excluded.example.com", "\"user@evil.com\"@excluded.example.com");
+
+        // under a permitted subtree, one trailing dot is accepted and an empty label is refused
+        PKIXNameConstraintValidator p = new PKIXNameConstraintValidator();
+        p.intersectPermittedSubtree(new GeneralSubtree(new GeneralName(GeneralName.rfc822Name, "bank.com")));
+        p.checkPermitted(new GeneralName(GeneralName.rfc822Name, "ceo@bank.com."));
+        try
+        {
+            p.checkPermitted(new GeneralName(GeneralName.rfc822Name, "ceo@bank.com.."));
+            fail("empty-label host must not be permitted");
+        }
+        catch (PKIXNameConstraintValidatorException e)
+        {
+            // expected
+        }
+        org.bouncycastle.asn1.x509.PKIXNameConstraintValidator cp = new org.bouncycastle.asn1.x509.PKIXNameConstraintValidator();
+        cp.intersectPermittedSubtree(new GeneralSubtree(new GeneralName(GeneralName.rfc822Name, "bank.com")));
+        cp.checkPermitted(new GeneralName(GeneralName.rfc822Name, "ceo@bank.com."));
+        try
+        {
+            cp.checkPermitted(new GeneralName(GeneralName.rfc822Name, "ceo@bank.com.."));
+            fail("asn1.x509 validator: empty-label host must not be permitted");
+        }
+        catch (org.bouncycastle.asn1.x509.NameConstraintValidatorException e)
+        {
+            // expected
+        }
+
+        // a host that is not in the excluded subtree is still accepted
+        PKIXNameConstraintValidator v = new PKIXNameConstraintValidator();
+        v.addExcludedSubtree(new GeneralSubtree(new GeneralName(GeneralName.rfc822Name, "bank.com")));
+        v.checkExcluded(new GeneralName(GeneralName.rfc822Name, "ceo@notbank.com."));
+    }
+
+    private void checkExcludedTrailingDot(int nameType, String excluded, String name)
+        throws Exception
+    {
+        PKIXNameConstraintValidator v = new PKIXNameConstraintValidator();
+        v.addExcludedSubtree(new GeneralSubtree(new GeneralName(nameType, excluded)));
+        try
+        {
+            v.checkExcluded(new GeneralName(nameType, name));
+            fail("trailing-dot name " + name + " must be caught by the excluded " + excluded + " subtree");
+        }
+        catch (PKIXNameConstraintValidatorException e)
+        {
+            // expected
+        }
+
+        // the public org.bouncycastle.asn1.x509 copy of the validator has the same checks
+        org.bouncycastle.asn1.x509.PKIXNameConstraintValidator cv = new org.bouncycastle.asn1.x509.PKIXNameConstraintValidator();
+        cv.addExcludedSubtree(new GeneralSubtree(new GeneralName(nameType, excluded)));
+        try
+        {
+            cv.checkExcluded(new GeneralName(nameType, name));
+            fail("asn1.x509 validator: trailing-dot name " + name + " must be caught by the excluded " + excluded + " subtree");
+        }
+        catch (org.bouncycastle.asn1.x509.NameConstraintValidatorException e)
+        {
+            // expected
+        }
     }
 
     /**
