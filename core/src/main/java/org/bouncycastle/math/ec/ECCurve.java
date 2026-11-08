@@ -1,6 +1,7 @@
 package org.bouncycastle.math.ec;
 
 import java.math.BigInteger;
+import java.security.SecureRandom;
 import java.util.Hashtable;
 import java.util.Random;
 
@@ -105,6 +106,55 @@ public abstract class ECCurve
     public abstract ECFieldElement fromBigInteger(BigInteger x);
 
     public abstract boolean isValidFieldElement(BigInteger x);
+
+    /**
+     * Return a random non-zero (i.e. multiplicative) field element, used for blinding.
+     */
+    ECFieldElement randomFieldElementMult(SecureRandom r)
+    {
+        /*
+         * NOTE: BigInteger comparisons in the rejection sampling are not constant-time, so we
+         * use the product of two independent elements to mitigate side-channels.
+         */
+        FiniteField field = getField();
+        if (ECAlgorithms.isFpField(field))
+        {
+            BigInteger p = field.getCharacteristic();
+            ECFieldElement fe1 = fromBigInteger(implRandomFieldElementMultFp(r, p));
+            ECFieldElement fe2 = fromBigInteger(implRandomFieldElementMultFp(r, p));
+            return fe1.multiply(fe2);
+        }
+        if (ECAlgorithms.isF2mField(field))
+        {
+            int m = getFieldSize();
+            ECFieldElement fe1 = fromBigInteger(implRandomFieldElementMultF2m(r, m));
+            ECFieldElement fe2 = fromBigInteger(implRandomFieldElementMultF2m(r, m));
+            return fe1.multiply(fe2);
+        }
+        return fromBigInteger(ECConstants.ONE);
+    }
+
+    private static BigInteger implRandomFieldElementMultFp(SecureRandom r, BigInteger p)
+    {
+        BigInteger x;
+        do
+        {
+            x = new BigInteger(p.bitLength(), r);
+        }
+        while (x.signum() <= 0 || x.compareTo(p) >= 0);
+        return x;
+    }
+
+    private static BigInteger implRandomFieldElementMultF2m(SecureRandom r, int m)
+    {
+        BigInteger x;
+        do
+        {
+            x = new BigInteger(m, r);
+        }
+        while (x.signum() <= 0);
+        return x;
+    }
 
     public synchronized Config configure()
     {

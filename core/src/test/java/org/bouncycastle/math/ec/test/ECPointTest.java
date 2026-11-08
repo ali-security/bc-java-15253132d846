@@ -1,5 +1,7 @@
 package org.bouncycastle.math.ec.test;
 
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.math.BigInteger;
 import java.security.SecureRandom;
 import java.util.ArrayList;
@@ -622,6 +624,206 @@ public class ECPointTest extends TestCase
                 implAddSubtractMultiplyTwiceEncodingTestAllCoords(x9B);
             }
         }
+    }
+
+    /**
+     * Source of randomness that counts how often random bytes are requested from it.
+     */
+    private static class CountingSecureRandom
+        extends SecureRandom
+    {
+        private int count = 0;
+
+        public void nextBytes(byte[] bytes)
+        {
+            ++count;
+            super.nextBytes(bytes);
+        }
+    }
+
+    /**
+     * Tests that <code>ECPoint.normalize()</code> blinds the inversion of the projective
+     * z-coordinate with a fresh random factor every time it has to invert it (CVE-2020-15522), and
+     * that the blinded calculation still yields the correct affine point, for both
+     * <code>Fp</code> and <code>F2m</code> curves in every supported coordinate system.
+     */
+    public void testNormalizeBlinding()
+        throws Exception
+    {
+        Field blindingRandom = ECPoint.class.getDeclaredField("blindingRandom");
+        blindingRandom.setAccessible(true);
+
+        Object saved = blindingRandom.get(null);
+        CountingSecureRandom random = new CountingSecureRandom();
+        blindingRandom.set(null, random);
+        try
+        {
+            implTestNormalizeBlinding(fp.curve, fp.p, random);
+            implTestNormalizeBlinding(f2m.curve, f2m.p, random);
+
+            String[] names = new String[]{ "secp256r1", "secp521r1", "curve25519", "sect163k1", "sect571r1" };
+            for (int i = 0; i < names.length; ++i)
+            {
+                X9ECParameters x9A = ECNamedCurveTable.getByName(names[i]);
+                if (x9A != null)
+                {
+                    implTestNormalizeBlinding(x9A, random);
+                }
+
+                X9ECParameters x9B = CustomNamedCurves.getByName(names[i]);
+                if (x9B != null)
+                {
+                    implTestNormalizeBlinding(x9B, random);
+                }
+            }
+        }
+        finally
+        {
+            blindingRandom.set(null, saved);
+        }
+    }
+
+    private void implTestNormalizeBlinding(ECCurve C, ECPoint[] ps, CountingSecureRandom random)
+    {
+        int blinded = 0;
+
+        int[] coords = ECCurve.getAllCoordinateSystems();
+        for (int i = 0; i < coords.length; ++i)
+        {
+            int coord = coords[i];
+            if (C.supportsCoordinateSystem(coord))
+            {
+                ECCurve c = C;
+                if (c.getCoordinateSystem() != coord)
+                {
+                    c = C.configure().setCoordinateSystem(coord).create();
+                }
+
+                for (int j = 0; j < ps.length; ++j)
+                {
+                    // Doubling and adding move a point away from z == 1 in projective coordinates
+                    ECPoint p = c.importPoint(ps[j]);
+                    blinded += implTestNormalizeBlinding(p.twice(), random);
+                    blinded += implTestNormalizeBlinding(p.twice().add(p), random);
+                }
+            }
+        }
+
+        assertTrue("no projective point was normalized", blinded > 0);
+    }
+
+    private void implTestNormalizeBlinding(X9ECParameters x9ECParameters, CountingSecureRandom random)
+    {
+        BigInteger n = x9ECParameters.getN();
+        ECPoint G = x9ECParameters.getG();
+        ECCurve C = x9ECParameters.getCurve();
+
+        int blinded = 0;
+
+        int[] coords = ECCurve.getAllCoordinateSystems();
+        for (int i = 0; i < coords.length; ++i)
+        {
+            int coord = coords[i];
+            if (C.supportsCoordinateSystem(coord))
+            {
+                ECCurve c = C;
+                ECPoint g = G;
+
+                if (c.getCoordinateSystem() != coord)
+                {
+                    c = C.configure().setCoordinateSystem(coord).create();
+                    g = c.importPoint(G);
+                }
+
+                for (int j = 0; j < 4; ++j)
+                {
+                    BigInteger k = BigIntegers.createRandomInRange(ECConstants.ONE, n.subtract(ECConstants.ONE), secRand);
+                    blinded += implTestNormalizeBlinding(g.multiply(k), random);
+                }
+            }
+        }
+
+        assertTrue("no projective point was normalized", blinded > 0);
+    }
+
+    private int implTestNormalizeBlinding(ECPoint p, CountingSecureRandom random)
+    {
+        if (p.isNormalized())
+        {
+            // Nothing to invert (affine coordinates, z == 1 or infinity)
+            assertSame(p, p.normalize());
+            return 0;
+        }
+
+        int before = random.count;
+        ECPoint q = p.normalize();
+        assertTrue("normalize() did not draw a random blinding factor", random.count > before);
+        assertTrue(q.isNormalized());
+        assertTrue(q.isValid());
+        // NOTE: equals() normalizes via ECCurve.normalizeAll, independently of normalize()
+        assertPointsEqual("blinded normalize() is incorrect", p, q);
+
+        // Normalizing again uses a fresh blinding factor, but must give exactly the same result
+        before = random.count;
+        ECPoint r = p.normalize();
+        assertTrue("normalize() did not draw a fresh blinding factor", random.count > before);
+        assertEquals(q.getAffineXCoord(), r.getAffineXCoord());
+        assertEquals(q.getAffineYCoord(), r.getAffineYCoord());
+
+        return 1;
+    }
+
+    /**
+     * Tests that the blinding factors used by <code>ECPoint.normalize()</code> are random,
+     * non-zero (i.e. multiplicative) elements of the curve's field, for both <code>Fp</code> and
+     * <code>F2m</code> curves.
+     */
+    public void testRandomFieldElementMult()
+        throws Exception
+    {
+        Method randomFieldElementMult = ECCurve.class.getDeclaredMethod("randomFieldElementMult",
+            new Class[]{ SecureRandom.class });
+        randomFieldElementMult.setAccessible(true);
+
+        implTestRandomFieldElementMult(randomFieldElementMult, fp.curve);
+        implTestRandomFieldElementMult(randomFieldElementMult, f2m.curve);
+
+        Set names = new HashSet(enumToList(ECNamedCurveTable.getNames()));
+        names.addAll(enumToList(CustomNamedCurves.getNames()));
+
+        Iterator it = names.iterator();
+        while (it.hasNext())
+        {
+            String name = (String)it.next();
+
+            X9ECParameters x9A = ECNamedCurveTable.getByName(name);
+            if (x9A != null)
+            {
+                implTestRandomFieldElementMult(randomFieldElementMult, x9A.getCurve());
+            }
+
+            X9ECParameters x9B = CustomNamedCurves.getByName(name);
+            if (x9B != null)
+            {
+                implTestRandomFieldElementMult(randomFieldElementMult, x9B.getCurve());
+            }
+        }
+    }
+
+    private void implTestRandomFieldElementMult(Method randomFieldElementMult, ECCurve c)
+        throws Exception
+    {
+        Set seen = new HashSet();
+        for (int i = 0; i < 100; ++i)
+        {
+            ECFieldElement b = (ECFieldElement)randomFieldElementMult.invoke(c, new Object[]{ secRand });
+            assertFalse("blinding factor must be non-zero", b.isZero());
+            assertTrue("blinding factor must be a field element", c.isValidFieldElement(b.toBigInteger()));
+            seen.add(b.toBigInteger());
+        }
+
+        // Even the small literature fields have well over 4 non-zero elements
+        assertTrue("blinding factors are not random", seen.size() >= 4);
     }
 
     private List enumToList(Enumeration en)
