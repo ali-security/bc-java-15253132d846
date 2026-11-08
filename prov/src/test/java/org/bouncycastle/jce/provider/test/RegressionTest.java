@@ -61,6 +61,7 @@ public class RegressionTest
         new PKIXPolicyMappingTest(),
         new SlotTwoTest(),
         new PKIXNameConstraintsTest(),
+        new LDAPFilterEncodingTest(),
         new MultiCertStoreTest(),
         new NoekeonTest(),
         new SerialisationTest(),
