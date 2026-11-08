@@ -2,9 +2,13 @@ package org.bouncycastle.crypto.test;
 
 import java.math.BigInteger;
 
+import org.bouncycastle.asn1.ASN1Encoding;
 import org.bouncycastle.asn1.ASN1ObjectIdentifier;
 import org.bouncycastle.asn1.nist.NISTObjectIdentifiers;
+import org.bouncycastle.asn1.x509.AlgorithmIdentifier;
+import org.bouncycastle.asn1.x509.DigestInfo;
 import org.bouncycastle.asn1.x509.X509ObjectIdentifiers;
+import org.bouncycastle.crypto.AsymmetricBlockCipher;
 import org.bouncycastle.crypto.Digest;
 import org.bouncycastle.crypto.digests.SHA1Digest;
 import org.bouncycastle.crypto.digests.SHA224Digest;
@@ -13,9 +17,12 @@ import org.bouncycastle.crypto.digests.SHA384Digest;
 import org.bouncycastle.crypto.digests.SHA3Digest;
 import org.bouncycastle.crypto.digests.SHA512Digest;
 import org.bouncycastle.crypto.digests.SHA512tDigest;
+import org.bouncycastle.crypto.encodings.PKCS1Encoding;
+import org.bouncycastle.crypto.engines.RSABlindedEngine;
 import org.bouncycastle.crypto.params.RSAKeyParameters;
 import org.bouncycastle.crypto.params.RSAPrivateCrtKeyParameters;
 import org.bouncycastle.crypto.signers.RSADigestSigner;
+import org.bouncycastle.util.Arrays;
 import org.bouncycastle.util.encoders.Base64;
 import org.bouncycastle.util.test.SimpleTest;
 
@@ -54,6 +61,52 @@ public class RSADigestSignerTest
         checkDigest(rsaPublic, rsaPrivate, new SHA3Digest(256), NISTObjectIdentifiers.id_sha3_256);
         checkDigest(rsaPublic, rsaPrivate, new SHA3Digest(384), NISTObjectIdentifiers.id_sha3_384);
         checkDigest(rsaPublic, rsaPrivate, new SHA3Digest(512), NISTObjectIdentifiers.id_sha3_512);
+
+        checkNoNullDigestInfoTailBytesChecked(rsaPublic, rsaPrivate);
+    }
+
+    /**
+     * A NULL-omitted DigestInfo whose hash matches the real message in every byte except the last
+     * two must NOT verify (CVE-2026-12860). A correct NULL-omitted DigestInfo must still verify.
+     */
+    private void checkNoNullDigestInfoTailBytesChecked(RSAKeyParameters rsaPublic, RSAPrivateCrtKeyParameters rsaPrivate)
+        throws Exception
+    {
+        byte[] msg = new byte[] { 1, 6, 3, 32, 7, 43, 2, 5, 7, 78, 4, 23 };
+
+        Digest digest = new SHA256Digest();
+        byte[] hash = new byte[digest.getDigestSize()];
+        digest.update(msg, 0, msg.length);
+        digest.doFinal(hash, 0);
+
+        byte[] tampered = Arrays.clone(hash);
+        tampered[tampered.length - 1] ^= 0x01;
+        tampered[tampered.length - 2] ^= (byte)0x80;
+
+        RSADigestSigner verifier = new RSADigestSigner(new SHA256Digest(), NISTObjectIdentifiers.id_sha256);
+        verifier.init(false, rsaPublic);
+        verifier.update(msg, 0, msg.length);
+        if (!verifier.verifySignature(signNoNullDigestInfo(rsaPrivate, hash)))
+        {
+            fail("no-NULL DigestInfo with the correct hash must verify");
+        }
+
+        verifier.init(false, rsaPublic);
+        verifier.update(msg, 0, msg.length);
+        if (verifier.verifySignature(signNoNullDigestInfo(rsaPrivate, tampered)))
+        {
+            fail("no-NULL DigestInfo with wrong final hash bytes must be rejected");
+        }
+    }
+
+    private static byte[] signNoNullDigestInfo(RSAPrivateCrtKeyParameters rsaPrivate, byte[] hash)
+        throws Exception
+    {
+        byte[] enc = new DigestInfo(new AlgorithmIdentifier(NISTObjectIdentifiers.id_sha256), hash).getEncoded(ASN1Encoding.DER);
+
+        AsymmetricBlockCipher rsa = new PKCS1Encoding(new RSABlindedEngine());
+        rsa.init(true, rsaPrivate);
+        return rsa.processBlock(enc, 0, enc.length);
     }
 
     private void checkDigest(RSAKeyParameters rsaPublic, RSAPrivateCrtKeyParameters rsaPrivate, Digest digest, ASN1ObjectIdentifier digOid)
