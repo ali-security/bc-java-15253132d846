@@ -4,6 +4,8 @@ import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 
+import org.bouncycastle.util.Properties;
+
 /**
  * A parser for ASN.1 streams which also returns, where possible, parsers for the objects it encounters.
  */
@@ -12,6 +14,8 @@ public class ASN1StreamParser
     private final InputStream _in;
     private final int         _limit;
     private final byte[][] tmpBuffers;
+    private final int level;
+    private final int maxLevel;
 
     public ASN1StreamParser(
         InputStream in)
@@ -23,10 +27,21 @@ public class ASN1StreamParser
         InputStream in,
         int         limit)
     {
+        this(in, limit, 0, Properties.asInteger(ASN1InputStream.MAX_CONS_DEPTH, ASN1InputStream.DEFAULT_MAX_CONS_DEPTH));
+    }
+
+    ASN1StreamParser(
+        InputStream in,
+        int         limit,
+        int         level,
+        int         maxLevel)
+    {
         this._in = in;
         this._limit = limit;
 
         this.tmpBuffers = new byte[11][];
+        this.level = level;
+        this.maxLevel = maxLevel;
     }
 
     public ASN1StreamParser(
@@ -127,6 +142,11 @@ public class ASN1StreamParser
             return null;
         }
 
+        if (this.level == this.maxLevel)
+        {
+            throw new IOException("maximum nested construction level reached - increase " + ASN1InputStream.MAX_CONS_DEPTH + " (currently " + maxLevel + ")");
+        }
+
         //
         // turn of looking for "00" while we resolve the tag
         //
@@ -152,7 +172,7 @@ public class ASN1StreamParser
             }
 
             IndefiniteLengthInputStream indIn = new IndefiniteLengthInputStream(_in, _limit);
-            ASN1StreamParser sp = new ASN1StreamParser(indIn, _limit);
+            ASN1StreamParser sp = new ASN1StreamParser(indIn, _limit, level + 1, maxLevel);
 
             if ((tag & BERTags.APPLICATION) != 0)
             {
@@ -177,7 +197,7 @@ public class ASN1StreamParser
 
             if ((tag & BERTags.TAGGED) != 0)
             {
-                return new BERTaggedObjectParser(isConstructed, tagNo, new ASN1StreamParser(defIn));
+                return new BERTaggedObjectParser(isConstructed, tagNo, createSubParser(defIn));
             }
 
             if (isConstructed)
@@ -189,13 +209,13 @@ public class ASN1StreamParser
                         //
                         // yes, people actually do this...
                         //
-                        return new BEROctetStringParser(new ASN1StreamParser(defIn));
+                        return new BEROctetStringParser(createSubParser(defIn));
                     case BERTags.SEQUENCE:
-                        return new DERSequenceParser(new ASN1StreamParser(defIn));
+                        return new DERSequenceParser(createSubParser(defIn));
                     case BERTags.SET:
-                        return new DERSetParser(new ASN1StreamParser(defIn));
+                        return new DERSetParser(createSubParser(defIn));
                     case BERTags.EXTERNAL:
-                        return new DERExternalParser(new ASN1StreamParser(defIn));
+                        return new DERExternalParser(createSubParser(defIn));
                     default:
                         throw new IOException("unknown tag " + tagNo + " encountered");
                 }
@@ -217,6 +237,11 @@ public class ASN1StreamParser
                 throw new ASN1Exception("corrupted stream detected", e);
             }
         }
+    }
+
+    private ASN1StreamParser createSubParser(DefiniteLengthInputStream defIn)
+    {
+        return new ASN1StreamParser(defIn, StreamUtil.findLimit(defIn), level + 1, maxLevel);
     }
 
     private void set00Check(boolean enabled)

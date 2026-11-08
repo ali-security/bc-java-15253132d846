@@ -46,13 +46,31 @@ public class NestedEncodingTest
     public void performTest()
         throws Exception
     {
-        unsortedSetTest();
-        nestedSetVisitCountTest();
-        parsedNestedSetTest();
-        parsedNestedTaggedSetTest();
-        parsedNestedExternalTest();
-        externalLengthTest();
-        externalTaggedConstructorTest();
+        // each tagged SET / EXTERNAL level here is two constructed levels (SET or EXTERNAL + [0]), so the
+        // parsed structures go deeper than the default org.bouncycastle.asn1.max_cons_depth (64).
+        String maxConsDepth = System.getProperty("org.bouncycastle.asn1.max_cons_depth");
+        System.setProperty("org.bouncycastle.asn1.max_cons_depth", "256");
+        try
+        {
+            unsortedSetTest();
+            nestedSetVisitCountTest();
+            parsedNestedSetTest();
+            parsedNestedTaggedSetTest();
+            parsedNestedExternalTest();
+            externalLengthTest();
+            externalTaggedConstructorTest();
+        }
+        finally
+        {
+            if (maxConsDepth == null)
+            {
+                System.clearProperty("org.bouncycastle.asn1.max_cons_depth");
+            }
+            else
+            {
+                System.setProperty("org.bouncycastle.asn1.max_cons_depth", maxConsDepth);
+            }
+        }
     }
 
     /*

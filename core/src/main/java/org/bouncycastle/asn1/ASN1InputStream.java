@@ -6,6 +6,7 @@ import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 
+import org.bouncycastle.util.Properties;
 import org.bouncycastle.util.io.Streams;
 
 /**
@@ -18,10 +19,16 @@ public class ASN1InputStream
     extends FilterInputStream
     implements BERTags
 {
+    static final String MAX_CONS_DEPTH = "org.bouncycastle.asn1.max_cons_depth";
+
+    static final int DEFAULT_MAX_CONS_DEPTH = 64;
+
     private final int limit;
     private final boolean lazyEvaluate;
 
     private final byte[][] tmpBuffers;
+    private final int level;
+    private final int maxLevel;
 
     public ASN1InputStream(
         InputStream is)
@@ -53,6 +60,23 @@ public class ASN1InputStream
         boolean lazyEvaluate)
     {
         this(new ByteArrayInputStream(input), input.length, lazyEvaluate);
+    }
+
+    /**
+     * Continue a lazily-deferred parse at a specific nested-construction level, so that forcing a
+     * LazyEncodedSequence keeps counting the nested-construction guard up from where the deferred
+     * parse left off instead of resetting it to zero. Without this a deeply nested SEQUENCE captured
+     * lazily would parse one level per force() with the level reset each time, defeating the
+     * max_cons_depth limit and allowing a StackOverflowError on a whole-tree walk of crafted input.
+     *
+     * @param input array containing ASN.1 encoded data.
+     * @param lazyEvaluate true if parsing inside constructed objects can be delayed.
+     * @param level the nested-construction level the deferred contents sit at.
+     * @param maxLevel the maximum nested-construction level allowed.
+     */
+    ASN1InputStream(byte[] input, boolean lazyEvaluate, int level, int maxLevel)
+    {
+        this(new ByteArrayInputStream(input), input.length, lazyEvaluate, level, maxLevel);
     }
     
     /**
@@ -95,10 +119,26 @@ public class ASN1InputStream
         int         limit,
         boolean     lazyEvaluate)
     {
+        this(input, limit, lazyEvaluate, 0, Properties.asInteger(MAX_CONS_DEPTH, DEFAULT_MAX_CONS_DEPTH));
+    }
+
+    private ASN1InputStream(InputStream input, int limit, boolean lazyEvaluate, int level, int maxLevel)
+    {
         super(input);
         this.limit = limit;
         this.lazyEvaluate = lazyEvaluate;
         this.tmpBuffers = new byte[11][];
+        this.level = level;
+        this.maxLevel = maxLevel;
+    }
+
+    private void checkLevel()
+        throws IOException
+    {
+        if (this.level == this.maxLevel)
+        {
+            throw new IOException("maximum nested construction level reached - increase " + MAX_CONS_DEPTH + " (currently " + maxLevel + ")");
+        }
     }
 
     int getLimit()
@@ -148,7 +188,12 @@ public class ASN1InputStream
 
         if ((tag & TAGGED) != 0)
         {
-            return new ASN1StreamParser(defIn).readTaggedObject(isConstructed, tagNo);
+            if (isConstructed)
+            {
+                checkLevel();
+            }
+
+            return new ASN1StreamParser(defIn, StreamUtil.findLimit(defIn), level + 1, maxLevel).readTaggedObject(isConstructed, tagNo);
         }
 
         if (isConstructed)
@@ -172,7 +217,13 @@ public class ASN1InputStream
                 case SEQUENCE:
                     if (lazyEvaluate)
                     {
-                        return new LazyEncodedSequence(defIn.toByteArray());
+                        // Record the nested-construction level the captured contents belong to, so that
+                        // forcing the lazy sequence later continues to count the guard up rather than
+                        // resetting it. The check throws here for an over-deep SEQUENCE, exactly as the
+                        // eager path (buildDEREncodableVector) would when descending into its contents.
+                        checkLevel();
+
+                        return new LazyEncodedSequence(defIn.toByteArray(), level + 1, maxLevel);
                     }
                     else
                     {
@@ -207,7 +258,14 @@ public class ASN1InputStream
     ASN1EncodableVector buildDEREncodableVector(
         DefiniteLengthInputStream dIn) throws IOException
     {
-        return new ASN1InputStream(dIn).buildEncodableVector();
+        if (dIn.getRemaining() < 1)
+        {
+            return new ASN1EncodableVector();
+        }
+
+        checkLevel();
+
+        return new ASN1InputStream(dIn, StreamUtil.findLimit(dIn), false, level + 1, maxLevel).buildEncodableVector();
     }
 
     public ASN1Primitive readObject()
@@ -243,8 +301,10 @@ public class ASN1InputStream
                 throw new IOException("indefinite-length primitive encoding encountered");
             }
 
+            checkLevel();
+
             IndefiniteLengthInputStream indIn = new IndefiniteLengthInputStream(this, limit);
-            ASN1StreamParser sp = new ASN1StreamParser(indIn, limit);
+            ASN1StreamParser sp = new ASN1StreamParser(indIn, limit, level + 1, maxLevel);
 
             if ((tag & APPLICATION) != 0)
             {

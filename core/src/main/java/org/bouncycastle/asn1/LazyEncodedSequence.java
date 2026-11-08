@@ -10,17 +10,23 @@ class LazyEncodedSequence
     extends ASN1Sequence
 {
     private byte[] encoded;
+    private final int contentsLevel;
+    private final int contentsMaxLevel;
 
     LazyEncodedSequence(
-        byte[] encoded)
+        byte[] encoded,
+        int contentsLevel,
+        int contentsMaxLevel)
         throws IOException
     {
         this.encoded = encoded;
+        this.contentsLevel = contentsLevel;
+        this.contentsMaxLevel = contentsMaxLevel;
     }
 
     private void parse()
     {
-        Enumeration en = new LazyConstructionEnumeration(encoded);
+        Enumeration en = new LazyConstructionEnumeration(encoded, contentsLevel, contentsMaxLevel);
 
         while (en.hasMoreElements())
         {
@@ -47,7 +53,7 @@ class LazyEncodedSequence
             return super.getObjects();
         }
 
-        return new LazyConstructionEnumeration(encoded);
+        return new LazyConstructionEnumeration(encoded, contentsLevel, contentsMaxLevel);
     }
 
     public synchronized int size()
