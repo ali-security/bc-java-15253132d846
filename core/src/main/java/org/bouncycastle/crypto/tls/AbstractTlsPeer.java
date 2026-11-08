@@ -39,4 +39,14 @@ public abstract class AbstractTlsPeer
     public void notifyHandshakeComplete() throws IOException
     {
     }
+
+    /**
+     * Return the maximum size (in bytes) that a DTLS handshake message received from the peer may
+     * declare. A declared length above this value is ignored before any reassembly buffer is
+     * allocated (CVE-2026-59646). Values below 1024 are raised to 1024.
+     */
+    public int getMaxHandshakeMessageSize()
+    {
+        return 32768;
+    }
 }

@@ -26,9 +26,20 @@ class DTLSReliableHandshake
 
     private int message_seq = 0, next_receive_seq = 0;
 
-    DTLSReliableHandshake(TlsContext context, DTLSRecordLayer transport)
+    private int maxHandshakeMessageSize;
+
+    static int getMaxHandshakeMessageSize(TlsPeer peer)
+    {
+        int size = (peer instanceof AbstractTlsPeer)
+            ? ((AbstractTlsPeer)peer).getMaxHandshakeMessageSize()
+            : 32768;
+        return Math.max(1024, size);
+    }
+
+    DTLSReliableHandshake(TlsContext context, DTLSRecordLayer transport, int maxHandshakeMessageSize)
     {
         this.recordLayer = transport;
+        this.maxHandshakeMessageSize = maxHandshakeMessageSize;
         this.handshakeHash = new DeferredHash();
         this.handshakeHash.init(context);
     }
@@ -148,6 +159,16 @@ class DTLSReliableHandshake
                     int fragment_offset = TlsUtils.readUint24(buf, 6);
                     if (fragment_offset + fragment_length > length)
                     {
+                        continue;
+                    }
+                    if (length > maxHandshakeMessageSize)
+                    {
+                        /*
+                         * NOTE: Declared message length exceeds the configured maximum - ignore it
+                         * rather than commit a reassembly buffer of that size. The reassembler is
+                         * sized from this attacker-controlled length before any authentication, so an
+                         * unbounded value is a memory-exhaustion DoS (CVE-2026-59646).
+                         */
                         continue;
                     }
 

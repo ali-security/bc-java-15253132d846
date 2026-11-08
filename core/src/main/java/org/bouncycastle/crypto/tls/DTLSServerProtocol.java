@@ -95,7 +95,8 @@ public class DTLSServerProtocol
         throws IOException
     {
         SecurityParameters securityParameters = state.serverContext.getSecurityParameters();
-        DTLSReliableHandshake handshake = new DTLSReliableHandshake(state.serverContext, recordLayer);
+        DTLSReliableHandshake handshake = new DTLSReliableHandshake(state.serverContext, recordLayer,
+            DTLSReliableHandshake.getMaxHandshakeMessageSize(state.server));
 
         DTLSReliableHandshake.Message clientMessage = handshake.receiveMessage();
 
