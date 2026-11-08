@@ -685,6 +685,82 @@ public class X500NameTest
         throws Exception
     {
         IETFUtils.valueToString(new DERUTF8String(" "));
+
+        // RFC 4514 escaping - also a regression guard for the linear (non O(n^2)) valueToString
+        // (CVE-2026-58059).
+        checkEscape("plain", "abc", "abc");
+        checkEscape("comma", "a\\,b", "a,b");
+        checkEscape("all specials", "\\,\\\"\\\\\\+\\=\\<\\>\\;", ",\"\\+=<>;");
+        checkEscape("leading space", "\\ ab", " ab");
+        checkEscape("trailing space", "ab\\ ", "ab ");
+        checkEscape("leading+trailing space", "\\ ab\\ ", " ab ");
+        checkEscape("single space", "\\ ", " ");
+        checkEscape("all spaces", "\\ \\ \\ ", "   ");
+        checkEscape("interior space kept", "a b", "a b");
+        checkEscape("leading hash", "\\#abc", "#abc");
+        checkEscape("non-leading hash kept", "a#b", "a#b");
+
+        // Values made only of spaces are escaped as "\\ \\ ...". canonicalize() (used by
+        // hashCode() and equals()) must handle them without crossing its start/end indexes.
+        for (int n = 1; n <= 3; n++)
+        {
+            StringBuffer sp = new StringBuffer();
+            for (int i = 0; i < n; i++)
+            {
+                sp.append(' ');
+            }
+            X500Name a = new X500NameBuilder(BCStyle.INSTANCE).addRDN(BCStyle.CN, new DERUTF8String(sp.toString())).build();
+            X500Name b = new X500NameBuilder(BCStyle.INSTANCE).addRDN(BCStyle.CN, new DERUTF8String(sp.toString())).build();
+            try
+            {
+                isTrue(n + " space value: equals", a.equals(b));
+                isTrue(n + " space value: hashCode", a.hashCode() == b.hashCode());
+            }
+            catch (RuntimeException e)
+            {
+                fail(n + " space value: " + e);
+            }
+        }
+
+        // A 1M-character attacker-supplied value reached from X500Name.toString()/equals()/hashCode()
+        // must be handled in linear time (the old insert-into-the-scanned-buffer loop was O(n^2)).
+        int bigN = 1000000;
+        StringBuffer bigCommasBuf = new StringBuffer(bigN);
+        StringBuffer bigSpacesBuf = new StringBuffer(bigN);
+        for (int i = 0; i < bigN; i++)
+        {
+            bigCommasBuf.append(',');
+            bigSpacesBuf.append(' ');
+        }
+        String bigCommas = bigCommasBuf.toString();
+        String bigSpaces = bigSpacesBuf.toString();
+
+        long startTime = System.currentTimeMillis();
+        isTrue("huge all-comma value fully escaped",
+            IETFUtils.valueToString(new DERUTF8String(bigCommas)).length() == 2 * bigN);
+        isTrue("huge leading-space value fully escaped",
+            IETFUtils.valueToString(new DERUTF8String(bigSpaces + "a")).length() == 2 * bigN + 1);
+        isTrue("huge trailing-space value fully escaped",
+            IETFUtils.valueToString(new DERUTF8String("a" + bigSpaces)).length() == 2 * bigN + 1);
+
+        X500Name bigUtf8Name = new X500NameBuilder(BCStyle.INSTANCE)
+            .addRDN(BCStyle.CN, new DERUTF8String(bigCommas)).build();
+        X500Name bigPrintableName = new X500NameBuilder(BCStyle.INSTANCE)
+            .addRDN(BCStyle.CN, new DERPrintableString(bigCommas)).build();
+        isTrue("huge RDN toString fully escaped", bigUtf8Name.toString().length() == 3 + 2 * bigN);
+        isTrue("huge RDN hashCode", bigUtf8Name.hashCode() == bigPrintableName.hashCode());
+        isTrue("huge RDN equals", bigUtf8Name.equals(bigPrintableName));
+        long elapsed = System.currentTimeMillis() - startTime;
+        isTrue("RDN value escaping took " + elapsed + "ms - not linear", elapsed < 10000);
+    }
+
+    private void checkEscape(String label, String expected, String value)
+    {
+        String actual = IETFUtils.valueToString(new DERUTF8String(value));
+        if (!expected.equals(actual))
+        {
+            fail(label + ": expected [" + expected + "] got [" + actual + "]");
+        }
     }
 
     /*

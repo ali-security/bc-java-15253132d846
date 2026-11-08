@@ -378,52 +378,68 @@ public class IETFUtils
             }
         }
 
-        int     end = vBuf.length();
-        int     index = 0;
+        // Escape in a single linear pass into a fresh builder. The previous implementation escaped by
+        // inserting a backslash into the buffer it was scanning (O(n) per insert), so a value of n
+        // RFC 4514 special characters - or n leading/trailing spaces - cost ~n^2/2 character moves: a
+        // CPU-exhaustion vector for an attacker-supplied large RDN reached via
+        // X500Name.toString()/equals()/hashCode() (CVE-2026-58059).
+        int len = vBuf.length();
 
-        if (vBuf.length() >= 2 && vBuf.charAt(0) == '\\' && vBuf.charAt(1) == '#')
+        // A leading "\#" (produced above when the value begins with '#') is emitted verbatim and the
+        // leading-space escaping is suppressed, matching the original phase ordering.
+        boolean hashPrefix = len >= 2 && vBuf.charAt(0) == '\\' && vBuf.charAt(1) == '#';
+
+        int firstNonSpace = 0;
+        while (firstNonSpace < len && vBuf.charAt(firstNonSpace) == ' ')
         {
-            index += 2;
+            firstNonSpace++;
+        }
+        int lastNonSpace = len - 1;
+        while (lastNonSpace >= 0 && vBuf.charAt(lastNonSpace) == ' ')
+        {
+            lastNonSpace--;
         }
 
-        while (index != end)
+        StringBuffer out = new StringBuffer(len + 16);
+        int index = 0;
+        if (hashPrefix)
         {
-            if ((vBuf.charAt(index) == ',')
-               || (vBuf.charAt(index) == '"')
-               || (vBuf.charAt(index) == '\\')
-               || (vBuf.charAt(index) == '+')
-               || (vBuf.charAt(index) == '=')
-               || (vBuf.charAt(index) == '<')
-               || (vBuf.charAt(index) == '>')
-               || (vBuf.charAt(index) == ';'))
+            out.append("\\#");
+            index = 2;
+        }
+
+        for (; index < len; index++)
+        {
+            char c = vBuf.charAt(index);
+            boolean escape;
+            switch (c)
             {
-                vBuf.insert(index, "\\");
-                index++;
-                end++;
+            case ',':
+            case '"':
+            case '\\':
+            case '+':
+            case '=':
+            case '<':
+            case '>':
+            case ';':
+                escape = true;
+                break;
+            case ' ':
+                // leading spaces escaped only without a "\#" prefix; trailing spaces always escaped.
+                escape = (!hashPrefix && index < firstNonSpace) || index > lastNonSpace;
+                break;
+            default:
+                escape = false;
+                break;
             }
-
-            index++;
-        }
-
-        int start = 0;
-        if (vBuf.length() > 0)
-        {
-            while (vBuf.length() > start && vBuf.charAt(start) == ' ')
+            if (escape)
             {
-                vBuf.insert(start, "\\");
-                start += 2;
+                out.append('\\');
             }
+            out.append(c);
         }
 
-        int endBuf = vBuf.length() - 1;
-
-        while (endBuf >= 0 && vBuf.charAt(endBuf) == ' ')
-        {
-            vBuf.insert(endBuf, '\\');
-            endBuf--;
-        }
-
-        return vBuf.toString();
+        return out.toString();
     }
 
     private static String bytesToString(
@@ -441,41 +457,41 @@ public class IETFUtils
 
     public static String canonicalize(String s)
     {
-        String value = Strings.toLowerCase(s);
-
-        if (value.length() > 0 && value.charAt(0) == '#')
+        if (s.length() > 0 && s.charAt(0) == '#')
         {
-            ASN1Primitive obj = decodeObject(value);
-
+            ASN1Primitive obj = decodeObject(s);
             if (obj instanceof ASN1String)
             {
-                value = Strings.toLowerCase(((ASN1String)obj).getString());
+                s = ((ASN1String)obj).getString();
             }
         }
 
-        if (value.length() > 1)
+        s = Strings.toLowerCase(s);
+
+        int length = s.length();
+        if (length < 2)
         {
-            int start = 0;
-            while (start + 1 < value.length() && value.charAt(start) == '\\' && value.charAt(start + 1) == ' ')
-            {
-                start += 2;
-            }
-
-            int end = value.length() - 1;
-            while (end - 1 > 0 && value.charAt(end - 1) == '\\' && value.charAt(end) == ' ')
-            {
-                end -= 2;
-            }
-
-            if (start > 0 || end < value.length() - 1)
-            {
-                value = value.substring(start, end + 1);
-            }
+            return s;
         }
 
-        value = stripInternalSpaces(value);
+        int start = 0, last = length - 1;
+        while (start < last && s.charAt(start) == '\\' && s.charAt(start + 1) == ' ')
+        {
+            start += 2;
+        }
 
-        return value;
+        int end = last, first = start + 1;
+        while (end > first && s.charAt(end - 1) == '\\' && s.charAt(end) == ' ')
+        {
+            end -= 2;
+        }
+
+        if (start > 0 || end < last)
+        {
+            s = s.substring(start, end + 1);
+        }
+
+        return stripInternalSpaces(s);
     }
 
     private static ASN1Primitive decodeObject(String oValue)
