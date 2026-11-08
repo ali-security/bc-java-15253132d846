@@ -769,6 +769,55 @@ public class BCFKSStoreTest
         shouldStoreOneECKeyWithChain();
         shouldStoreOnePrivateKey();
         shouldStoreOnePrivateKeyWithChain();
+        shouldRejectExcessiveMacKdfCost();
+    }
+
+    // The integrity-MAC key is derived from KDF parameters carried in the (not-yet-verified)
+    // keystore, so an attacker-supplied iteration count must be bounded before the derivation
+    // runs (CVE-2026-58063). The store is written with the default cost (1024), then loaded with
+    // the bound lowered below it to confirm the guard fires before the derivation.
+    private void shouldRejectExcessiveMacKdfCost()
+        throws Exception
+    {
+        KeyStore store = KeyStore.getInstance("BCFKS", "BC");
+        store.load(null, null);
+
+        ByteArrayOutputStream bOut = new ByteArrayOutputStream();
+        store.store(bOut, testPassword);
+        byte[] enc = bOut.toByteArray();
+
+        String oldIt = System.getProperty("org.bouncycastle.bcfks.max_it_count");
+        System.setProperty("org.bouncycastle.bcfks.max_it_count", "100");
+        try
+        {
+            KeyStore ks = KeyStore.getInstance("BCFKS", "BC");
+            ks.load(new ByteArrayInputStream(enc), testPassword);
+            fail("excessive BCFKS MAC iteration count accepted");
+        }
+        catch (IOException e)
+        {
+            isTrue("unexpected message: " + e.getMessage(), e.getMessage().indexOf("greater than 100") >= 0);
+        }
+        finally
+        {
+            restoreProperty("org.bouncycastle.bcfks.max_it_count", oldIt);
+        }
+
+        // with the default bound (5000000) the same store still loads
+        KeyStore ks = KeyStore.getInstance("BCFKS", "BC");
+        ks.load(new ByteArrayInputStream(enc), testPassword);
+    }
+
+    private static void restoreProperty(String name, String old)
+    {
+        if (old == null)
+        {
+            System.clearProperty(name);
+        }
+        else
+        {
+            System.setProperty(name, old);
+        }
     }
 
     public static void main(

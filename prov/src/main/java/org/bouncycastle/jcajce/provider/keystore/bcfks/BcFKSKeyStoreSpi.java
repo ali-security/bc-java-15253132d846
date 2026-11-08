@@ -70,6 +70,7 @@ import org.bouncycastle.crypto.generators.PKCS5S2ParametersGenerator;
 import org.bouncycastle.crypto.params.KeyParameter;
 import org.bouncycastle.jce.provider.BouncyCastleProvider;
 import org.bouncycastle.util.Arrays;
+import org.bouncycastle.util.Properties;
 import org.bouncycastle.util.Strings;
 
 class BcFKSKeyStoreSpi
@@ -679,10 +680,14 @@ class BcFKSKeyStoreSpi
         {
             PBKDF2Params pbkdf2Params = PBKDF2Params.getInstance(pbkdAlgorithm.getParameters());
 
+            // The KDF cost parameters arrive in the not-yet-integrity-checked keystore, so bound
+            // the attacker-supplied iteration count before the derivation.
+            int iterationCount = validateIterationCount(pbkdf2Params.getIterationCount());
+
             if (pbkdf2Params.getPrf().getAlgorithm().equals(PKCSObjectIdentifiers.id_hmacWithSHA512))
             {
 
-                pGen.init(Arrays.concatenate(encPassword, differentiator), pbkdf2Params.getSalt(), pbkdf2Params.getIterationCount().intValue());
+                pGen.init(Arrays.concatenate(encPassword, differentiator), pbkdf2Params.getSalt(), iterationCount);
 
                 keySizeInBytes = pbkdf2Params.getKeyLength().intValue();
             }
@@ -697,6 +702,23 @@ class BcFKSKeyStoreSpi
         }
 
         return ((KeyParameter)pGen.generateDerivedParameters(keySizeInBytes * 8)).getKey();
+    }
+
+    private static int validateIterationCount(BigInteger ic)
+        throws IOException
+    {
+        if (ic == null || ic.signum() < 0 || ic.bitLength() > 31)
+        {
+            throw new IOException("BCFKS KeyStore: invalid iteration count");
+        }
+
+        long max = Properties.asInteger(Properties.BCFKS_MAX_IT_COUNT, 5000000);
+        if (ic.longValue() > max)
+        {
+            throw new IOException("BCFKS KeyStore: iteration count (" + ic + ") greater than " + max);
+        }
+
+        return ic.intValue();
     }
 
     private void verifyMac(byte[] content, PbkdMacIntegrityCheck integrityCheck, char[] password)
