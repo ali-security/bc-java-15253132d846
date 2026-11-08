@@ -102,6 +102,12 @@ public abstract class ASN1Set
     private boolean isSorted = false;
 
     /**
+     * DER (sorted) ordering of the elements of an unsorted set, computed once by
+     * toDERObject() and reused on subsequent DER conversions.
+     */
+    private Vector sortedSet = null;
+
+    /**
      * return an ASN1Set from the given object.
      *
      * @param obj the object we want converted.
@@ -376,31 +382,43 @@ public abstract class ASN1Set
      */
     ASN1Primitive toDERObject()
     {
+        Vector sorted;
+
         if (isSorted)
         {
-            ASN1Set derSet = new DERSet();
-
-            derSet.set = this.set;
-
-            return derSet;
+            sorted = this.set;
         }
         else
         {
-            Vector v = new Vector();
+            sorted = sortedSet;
 
-            for (int i = 0; i != set.size(); i++)
+            if (sorted == null)
             {
-                v.addElement(set.elementAt(i));
+                Vector v = new Vector();
+
+                for (int i = 0; i != set.size(); i++)
+                {
+                    v.addElement(set.elementAt(i));
+                }
+
+                ASN1Set tmp = new DERSet();
+
+                tmp.set = v;
+
+                tmp.sort();
+
+                sorted = v;
+                sortedSet = v;
             }
-
-            ASN1Set derSet = new DERSet();
-
-            derSet.set = v;
-
-            derSet.sort();
-
-            return derSet;
         }
+
+        ASN1Set derSet = new DERSet();
+
+        derSet.set = sorted;
+        // the elements are already in DER order - never sort them again.
+        derSet.isSorted = true;
+
+        return derSet;
     }
 
     /**
@@ -412,6 +430,8 @@ public abstract class ASN1Set
         ASN1Set derSet = new DLSet();
 
         derSet.set = this.set;
+        derSet.isSorted = this.isSorted;
+        derSet.sortedSet = this.sortedSet;
 
         return derSet;
     }
