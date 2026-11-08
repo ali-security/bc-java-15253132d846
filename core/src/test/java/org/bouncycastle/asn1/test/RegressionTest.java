@@ -71,7 +71,8 @@ public class RegressionTest
         new GeneralNameTest(),
         new ObjectIdentifierTest(),
         new RFC4519Test(),
-        new NestedEncodingTest()
+        new NestedEncodingTest(),
+        new DefiniteLengthAllocationTest()
     };
 
     public static void main(
