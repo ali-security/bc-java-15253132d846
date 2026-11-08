@@ -13,8 +13,14 @@ import junit.framework.Test;
 import junit.framework.TestCase;
 import junit.framework.TestSuite;
 
+import org.bouncycastle.asn1.ASN1EncodableVector;
+import org.bouncycastle.asn1.ASN1Integer;
+import org.bouncycastle.asn1.ASN1Primitive;
+import org.bouncycastle.asn1.DEROctetString;
+import org.bouncycastle.asn1.DERSequence;
 import org.bouncycastle.asn1.x9.ECNamedCurveTable;
 import org.bouncycastle.asn1.x9.X9ECParameters;
+import org.bouncycastle.asn1.x9.X9FieldID;
 import org.bouncycastle.crypto.ec.CustomNamedCurves;
 import org.bouncycastle.math.ec.ECAlgorithms;
 import org.bouncycastle.math.ec.ECConstants;
@@ -189,6 +195,91 @@ public class ECPointTest extends TestCase
         {
             assertPointsEqual("Adding infinity failed", p[i], p[i].add(infinity));
             assertPointsEqual("Adding to infinity failed", p[i], infinity.add(p[i]));
+        }
+    }
+
+    public void testLargeMInF2m()
+    {
+        int m = 2048;
+        int k1 = 1;
+        BigInteger aTpb = new BigInteger("1000", 2);
+        BigInteger bTpb = new BigInteger("1001", 2);
+        BigInteger n = new BigInteger("23");
+        BigInteger h = new BigInteger("1");
+
+        try
+        {
+            ECCurve.F2m curve = new ECCurve.F2m(m, k1, aTpb, bTpb, n, h);
+            fail("no exception");
+        }
+        catch (IllegalArgumentException e)
+        {
+            assertEquals("field size out of range: 2048", e.getMessage());
+        }
+    }
+
+    public void testLargeMInF2mPentanomial()
+    {
+        try
+        {
+            new ECCurve.F2m(2048, 1, 2, 3, ECConstants.ONE, ECConstants.ONE);
+            fail("no exception");
+        }
+        catch (IllegalArgumentException e)
+        {
+            assertEquals("field size out of range: 2048", e.getMessage());
+        }
+    }
+
+    public void testLargeMInF2mX9ECParameters()
+        throws Exception
+    {
+        int m = 2048;
+
+        // compressed base point encoding of the right length for the field
+        byte[] g = new byte[1 + (m + 7) / 8];
+        g[0] = 0x02;
+        g[g.length - 1] = 0x01;
+
+        ASN1EncodableVector curveSeq = new ASN1EncodableVector();
+        curveSeq.add(new DEROctetString(new byte[]{ 0x08 }));
+        curveSeq.add(new DEROctetString(new byte[]{ 0x09 }));
+
+        ASN1EncodableVector params = new ASN1EncodableVector();
+        params.add(new ASN1Integer(1));
+        params.add(new X9FieldID(m, 1));
+        params.add(new DERSequence(curveSeq));
+        params.add(new DEROctetString(g));
+        params.add(new ASN1Integer(23));
+        params.add(new ASN1Integer(1));
+
+        byte[] encoding = new DERSequence(params).getEncoded();
+
+        try
+        {
+            X9ECParameters.getInstance(ASN1Primitive.fromByteArray(encoding));
+            fail("no exception");
+        }
+        catch (IllegalArgumentException e)
+        {
+            assertEquals("field size out of range: 2048", e.getMessage());
+        }
+    }
+
+    public void testMaxMInF2mAccepted()
+    {
+        // twice 571 is the largest field size permitted by default
+        ECCurve.F2m curve = new ECCurve.F2m(1142, 1, ECConstants.ONE, ECConstants.ONE);
+        assertEquals(1142, curve.getFieldSize());
+
+        try
+        {
+            new ECCurve.F2m(1143, 1, ECConstants.ONE, ECConstants.ONE);
+            fail("no exception");
+        }
+        catch (IllegalArgumentException e)
+        {
+            assertEquals("field size out of range: 1143", e.getMessage());
         }
     }
 

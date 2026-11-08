@@ -668,8 +668,37 @@ public abstract class ECCurve
          */
         private BigInteger[] si = null;
 
+        private static int getMaxF2mFieldSize()
+        {
+            int defaultValue = 1142;  // twice 571
+
+            try
+            {
+                String value = System.getProperty("org.bouncycastle.ec.max_f2m_field_size");
+                if (value != null)
+                {
+                    return Integer.parseInt(value.trim());
+                }
+            }
+            catch (SecurityException e)
+            {
+                // fall through to the default
+            }
+            catch (NumberFormatException e)
+            {
+                // fall through to the default
+            }
+
+            return defaultValue;
+        }
+
         private static FiniteField buildField(int m, int k1, int k2, int k3)
         {
+            if (m > getMaxF2mFieldSize())  // twice 571
+            {
+                throw new IllegalArgumentException("field size out of range: " + m);
+            }
+
             if (k1 == 0)
             {
                 throw new IllegalArgumentException("k1 must be > 0");
