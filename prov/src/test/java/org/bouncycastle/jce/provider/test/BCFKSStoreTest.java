@@ -770,6 +770,69 @@ public class BCFKSStoreTest
         shouldStoreOnePrivateKey();
         shouldStoreOnePrivateKeyWithChain();
         shouldRejectExcessiveMacKdfCost();
+        shouldRejectExcessiveMacKeyLength();
+    }
+
+    // CVE-2026-17508: the MAC key size is taken from the same not-yet-verified KDF parameters as
+    // the cost, and sizes the derivation output, so an attacker-supplied keyLength has to be
+    // bounded too. It is also multiplied by 8 at the derivation call, which overflows for a large
+    // enough value and threw an unchecked NegativeArraySizeException out of KeyStore.load. The
+    // store writer only ever emits 64, so the oversized value is spliced into the encoding here.
+    private void shouldRejectExcessiveMacKeyLength()
+        throws Exception
+    {
+        KeyStore store = KeyStore.getInstance("BCFKS", "BC");
+        store.load(null, null);
+
+        ByteArrayOutputStream bOut = new ByteArrayOutputStream();
+        store.store(bOut, testPassword);
+        byte[] enc = bOut.toByteArray();
+
+        // 268435456 makes keyLength * 8 overflow to a negative bit count
+        BigInteger[] hostile = {BigInteger.valueOf(1025), BigInteger.valueOf(268435456)};
+
+        for (int i = 0; i != hostile.length; i++)
+        {
+            try
+            {
+                KeyStore ks = KeyStore.getInstance("BCFKS", "BC");
+                ks.load(new ByteArrayInputStream(withMacKeyLength(enc, hostile[i])), testPassword);
+                fail("excessive BCFKS MAC keyLength accepted: " + hostile[i]);
+            }
+            catch (IOException e)
+            {
+                isTrue("unexpected message: " + e.getMessage(),
+                    e.getMessage().indexOf("keyLength") >= 0);
+            }
+            catch (RuntimeException e)
+            {
+                fail("excessive BCFKS MAC keyLength " + hostile[i] + " not rejected: " + e);
+            }
+        }
+    }
+
+    // Rewrite the keyLength in the integrity-check PBKDF2 parameters of a BCFKS encoding.
+    private byte[] withMacKeyLength(byte[] store, BigInteger keyLength)
+        throws IOException
+    {
+        org.bouncycastle.asn1.bc.ObjectStore objStore = org.bouncycastle.asn1.bc.ObjectStore.getInstance(store);
+        org.bouncycastle.asn1.bc.PbkdMacIntegrityCheck macCheck = org.bouncycastle.asn1.bc.PbkdMacIntegrityCheck.getInstance(
+            objStore.getIntegrityCheck().getIntegrityCheck());
+
+        org.bouncycastle.asn1.pkcs.PBKDF2Params params = org.bouncycastle.asn1.pkcs.PBKDF2Params.getInstance(
+            macCheck.getPbkdAlgorithm().getParameters());
+        org.bouncycastle.asn1.pkcs.PBKDF2Params rewritten = new org.bouncycastle.asn1.pkcs.PBKDF2Params(params.getSalt(),
+            params.getIterationCount().intValue(), keyLength.intValue(), params.getPrf());
+
+        org.bouncycastle.asn1.bc.PbkdMacIntegrityCheck rebuilt = new org.bouncycastle.asn1.bc.PbkdMacIntegrityCheck(
+            macCheck.getMacAlgorithm(),
+            new org.bouncycastle.asn1.pkcs.KeyDerivationFunc(org.bouncycastle.asn1.pkcs.PKCSObjectIdentifiers.id_PBKDF2, rewritten),
+            macCheck.getMac());
+
+        // the store is password-protected, so the store data is the encrypted form
+        return new org.bouncycastle.asn1.bc.ObjectStore(
+            org.bouncycastle.asn1.bc.EncryptedObjectStoreData.getInstance(objStore.getStoreData()),
+            new org.bouncycastle.asn1.bc.ObjectStoreIntegrityCheck(rebuilt)).getEncoded(org.bouncycastle.asn1.ASN1Encoding.DER);
     }
 
     // The integrity-MAC key is derived from KDF parameters carried in the (not-yet-verified)

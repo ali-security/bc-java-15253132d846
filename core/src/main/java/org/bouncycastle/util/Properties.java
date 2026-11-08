@@ -16,6 +16,14 @@ public class Properties
      */
     public static final String BCFKS_MAX_IT_COUNT = "org.bouncycastle.bcfks.max_it_count";
 
+    /**
+     * Upper bound on the PBKDF2 iteration count honoured by the raw JCA PBKDF2 provider (both the
+     * SecretKeyFactory derivation and the AlgorithmParameters parse a Cipher performs for PBES2).
+     * The count can travel inside an unauthenticated container, so an unbounded count is a
+     * CPU-exhaustion vector. Default 10,000,000. Read via {@link #asInteger(String, int)}.
+     */
+    public static final String PBE_MAX_ITERATION_COUNT = "org.bouncycastle.pbe.max_iteration_count";
+
     public static boolean isOverrideSet(final String propertyName)
     {
         try

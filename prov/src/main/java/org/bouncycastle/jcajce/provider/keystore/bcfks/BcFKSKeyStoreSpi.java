@@ -689,7 +689,7 @@ class BcFKSKeyStoreSpi
 
                 pGen.init(Arrays.concatenate(encPassword, differentiator), pbkdf2Params.getSalt(), iterationCount);
 
-                keySizeInBytes = pbkdf2Params.getKeyLength().intValue();
+                keySizeInBytes = validateKeyLength(pbkdf2Params.getKeyLength());
             }
             else
             {
@@ -702,6 +702,29 @@ class BcFKSKeyStoreSpi
         }
 
         return ((KeyParameter)pGen.generateDerivedParameters(keySizeInBytes * 8)).getKey();
+    }
+
+    // The keys derived here are 32 bytes (64 for the SHA-512 integrity check); anything beyond
+    // this is rejected as abusive. Bounding it also keeps the keySizeInBytes * 8 conversion at the
+    // derivation call site from overflowing into a NegativeArraySizeException.
+    private static final int MAX_KEY_LENGTH = 1024;
+
+    private static int validateKeyLength(BigInteger keyLength)
+        throws IOException
+    {
+        // As with the iteration count: the value arrives in the not-yet-integrity-checked keystore
+        // and sizes the derivation output, so bound it before deriving.
+        if (keyLength == null || keyLength.signum() <= 0 || keyLength.bitLength() > 31)
+        {
+            throw new IOException("BCFKS KeyStore: invalid keyLength");
+        }
+
+        if (keyLength.intValue() > MAX_KEY_LENGTH)
+        {
+            throw new IOException("BCFKS KeyStore: keyLength (" + keyLength + ") greater than " + MAX_KEY_LENGTH);
+        }
+
+        return keyLength.intValue();
     }
 
     private static int validateIterationCount(BigInteger ic)

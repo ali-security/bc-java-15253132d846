@@ -1,5 +1,6 @@
 package org.bouncycastle.jce.provider.test;
 
+import java.math.BigInteger;
 import java.security.AlgorithmParameters;
 import java.security.InvalidAlgorithmParameterException;
 import java.security.InvalidKeyException;
@@ -641,6 +642,85 @@ public class PBETest
 
         testMixedKeyTypes();
         testNullSalt();
+        testIterationCountLimit();
+    }
+
+    // CVE-2026-17508: the PBKDF2 iteration count can come from an untrusted PBES2 structure, so
+    // both the key factory and the AlgorithmParameters parse must bound it.
+    private void testIterationCountLimit()
+        throws Exception
+    {
+        byte[] salt = new byte[16];
+        char[] password = "hello".toCharArray();
+
+        // Lower the cap for the test so the derivation stays cheap.
+        System.setProperty("org.bouncycastle.pbe.max_iteration_count", "1000");
+        try
+        {
+            try
+            {
+                SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256", "BC").generateSecret(
+                    new PBEKeySpec(password, salt, 2000, 256));
+                fail("no exception on over-limit PBKDF2 iteration count");
+            }
+            catch (java.security.spec.InvalidKeySpecException e)
+            {
+                isTrue("wrong message: " + e.getMessage(), e.getMessage().startsWith("iteration count"));
+            }
+
+            byte[] encoded = new org.bouncycastle.asn1.pkcs.PBKDF2Params(salt, 2000).getEncoded();
+            try
+            {
+                AlgorithmParameters.getInstance("PBKDF2", "BC").init(encoded);
+                fail("no exception on over-limit PBKDF2 parameters");
+            }
+            catch (java.io.IOException e)
+            {
+                isTrue("wrong message: " + e.getMessage(), e.getMessage().startsWith("iteration count"));
+            }
+
+            // A count within the limit still works.
+            SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256", "BC").generateSecret(
+                new PBEKeySpec(password, salt, 500, 256));
+        }
+        finally
+        {
+            System.getProperties().remove("org.bouncycastle.pbe.max_iteration_count");
+        }
+
+        // Under the default cap (10,000,000) attacker-sized counts are refused before any
+        // derivation runs.
+        try
+        {
+            SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256", "BC").generateSecret(
+                new PBEKeySpec(password, salt, Integer.MAX_VALUE, 256));
+            fail("no exception on 2^31-1 PBKDF2 iteration count");
+        }
+        catch (java.security.spec.InvalidKeySpecException e)
+        {
+            isTrue(e.getMessage(), e.getMessage().equals("iteration count (2147483647) greater than 10000000"));
+        }
+
+        BigInteger[] hostile = { BigInteger.valueOf(10000001), BigInteger.valueOf(Integer.MAX_VALUE),
+            BigInteger.ONE.shiftLeft(32).add(BigInteger.valueOf(1000)) };
+        for (int i = 0; i != hostile.length; i++)
+        {
+            byte[] encoded = new org.bouncycastle.asn1.DERSequence(new org.bouncycastle.asn1.ASN1Encodable[]{
+                new org.bouncycastle.asn1.DEROctetString(salt), new org.bouncycastle.asn1.ASN1Integer(hostile[i]) }).getEncoded();
+            try
+            {
+                AlgorithmParameters.getInstance("PBKDF2", "BC").init(encoded);
+                fail("no exception on over-limit PBKDF2 parameters: " + hostile[i]);
+            }
+            catch (java.io.IOException e)
+            {
+                isTrue(e.getMessage(), e.getMessage().equals("iteration count (" + hostile[i] + ") greater than 10000000"));
+            }
+        }
+
+        // a count at the default cap is still accepted by the parameter parse
+        AlgorithmParameters.getInstance("PBKDF2", "BC").init(
+            new org.bouncycastle.asn1.pkcs.PBKDF2Params(salt, 10000000).getEncoded());
     }
 
     private void testPKCS12Interop()
